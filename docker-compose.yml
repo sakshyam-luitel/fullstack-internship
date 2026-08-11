@@ -33,7 +33,7 @@ services:
     build:
       context: ./backend/job-tracker-backend
       dockerfile: Dockerfile
-    command: bash -c "alembic upgrade head && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    command: sh -lc "uv run alembic upgrade head && uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - ./backend/job-tracker-backend:/app
     ports:
