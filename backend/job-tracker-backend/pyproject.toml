@@ -10,7 +10,6 @@ dependencies = [
     "uvicorn>=0.52.1",
     "graphene>=3.4.3",
     "graphene-sqlalchemy>=2.1.0",
-    "psycopg2>=2.9.12",
     "black>=26.5.1",
     "python-dotenv>=1.2.2",
 ]
