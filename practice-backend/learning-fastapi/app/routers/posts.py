@@ -9,25 +9,23 @@ router = APIRouter(
     tags = ['Posts']
 )
 
-@router.get("/")
-def get_posts(db : Session = Depends(get_db) , response_model = schemas.Post):
+@router.get("/", response_model=list[schemas.Post] )
+def get_posts(db: Session = Depends(get_db) , current_user = Depends(oauth2.verify_access_token)):
     # cursor.execute("""SELECT * FROM posts""")
     # posts = cursor.fetchall()
-    posts = db.query(models.Post).all()
-    
-    print(posts)
+    posts = db.query(models.Post).filter(models.Post.user_id == current_user.id).all()
     return posts
 
 
 
-@router.post("/" , status_code = status.HTTP_201_CREATED , response_model = schemas.Post)
-def create_posts(post : schemas.PostBase , db: Session = Depends(get_db) , user_id : int = Depends(oauth2.verify_access_token)):
+@router.post("/", status_code=status.HTTP_201_CREATED, response_model=schemas.Post)
+def create_posts(post: schemas.PostBase, db: Session = Depends(get_db), current_user = Depends(oauth2.verify_access_token)):
     # cursor.execute(""" INSERT INTO posts (title , content , published) VALUES (%s , %s , %s) RETURNING *""" , (post.title , post.content , post.published))
     # new_post = cursor.fetchone()
     # conn.commit()
     # new_post =  models.Post(title = post.title , content = post.content , published = post.published)
     
-    new_post = models.Post(**post.dict())
+    new_post = models.Post(user_id = current_user.id , **post.dict())
     
     db.add(new_post)
     db.commit()
@@ -46,7 +44,7 @@ def create_posts(post : schemas.PostBase , db: Session = Depends(get_db) , user_
 
 
 @router.get('/{id}', response_model = schemas.Post)
-def get_post(id : int , db: Session = Depends(get_db)):
+def get_post(id : int , db: Session = Depends(get_db) , current_user = Depends(oauth2.verify_access_token)):
     # post = find_post(id)  
     # cursor.execute("""SELECT * FROM posts WHERE id=%s""" , (str(id)))
     # post = cursor.fetchone()
@@ -61,18 +59,25 @@ def get_post(id : int , db: Session = Depends(get_db)):
     return post
 
 @router.delete('/{id}', status_code=status.HTTP_204_NO_CONTENT)
-def delete_posts(id: int , db: Session = Depends(get_db)):
+def delete_posts(id: int , db: Session = Depends(get_db) , current_user= Depends(oauth2.verify_access_token)):
     # cursor.execute("""DELETE FROM posts WHERE id = %s RETURNING *""", (str(id),))
     # deleted_post = cursor.fetchone()
     # conn.commit()
     
-    
     post = db.query(models.Post).filter(models.Post.id == id)
+    
+    
 
     if not post.first():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"post with id: {id} was not found"
+        )
+        
+    if current_user.id != post.first().user_id:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = f"Not authorized to perform the request"
         )
     
     post.delete(synchronize_session = False)
@@ -85,8 +90,8 @@ def delete_posts(id: int , db: Session = Depends(get_db)):
 #         if post['id'] == id:
 #             return index
         
-@router.put('/{id}' ,status_code = status.HTTP_200_OK )
-def update_post(id : int , updated_post : schemas.PostBase ,response_model = schemas.Post, db : Session = Depends(get_db)):
+@router.put('/{id}', status_code=status.HTTP_200_OK, response_model=schemas.Post)
+def update_post(id: int, updated_post: schemas.PostBase, db: Session = Depends(get_db) , current_user = Depends(oauth2.verify_access_token)):
     #index = find_index_post(id)
     # cursor.execute("""UPDATE posts SET title=%s,content=%s, published=%s  WHERE id=%s RETURNING *""",(post.title , post.content,post.published,str(id )))
 
@@ -104,6 +109,13 @@ def update_post(id : int , updated_post : schemas.PostBase ,response_model = sch
     # post_dict = post.dict()
     # post_dict['id'] = id
     # my_posts[index] = post_dict
+    
+    if current_user.id != post.user_id:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail =  f"You are not authorized to update this post"
+        )
+    
     post_query.update(updated_post.dict() , synchronize_session = False)
     db.commit()
     

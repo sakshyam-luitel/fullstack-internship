@@ -2,6 +2,7 @@ from fastapi import status , HTTPException , Depends , APIRouter
 from .. import models, schemas , utils
 from ..database import engine , get_db
 from sqlalchemy.orm import Session
+from . import oauth2
 
 router = APIRouter(
     prefix = "/users",
@@ -20,8 +21,8 @@ def create_users(user : schemas.UserCreate , db: Session = Depends(get_db)):
     
     return new_user
 
-@router.get('/{id}' , response_model = schemas.UserOut)
-def get_users(id : int , db : Session = Depends(get_db)):
+@router.get('/{id}' , response_model = schemas.UserOut )
+def get_users(id : int , db : Session = Depends(get_db) , current_user = Depends(oauth2.verify_access_token) ):
     user = db.query(models.Users).filter(models.Users.id == id).first()
     
     if not user:
