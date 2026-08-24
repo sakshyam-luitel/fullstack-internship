@@ -10,7 +10,7 @@ router = APIRouter(
 )
 
 @router.get("/", response_model=list[schemas.Post] )
-def get_posts(db: Session = Depends(get_db) , current_user = Depends(oauth2.verify_access_token)):
+def get_posts(db: Session = Depends(get_db) , current_user = Depends(oauth2.verify_access_token) , limit :int = 10):
     # cursor.execute("""SELECT * FROM posts""")
     # posts = cursor.fetchall()
     posts = db.query(models.Post).filter(models.Post.user_id == current_user.id).all()
