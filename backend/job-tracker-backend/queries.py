@@ -10,7 +10,7 @@ class PostQuery:
         user_id = info.context.get("user_id")
         if user_id is None:
             raise Exception('Not Authenticated')
-        posts = db.query(models.Post).all()
+        posts = db.query(models.Post).filter(models.Post.user_id == user_id).all()
         
         return[
             schemas.Posts(
@@ -23,7 +23,8 @@ class PostQuery:
             )
             for p in posts
         ]
-   
+
+# User Query to retrieve all Users from database
 @strawberry.type     
 class UserQuery:
     @strawberry.field

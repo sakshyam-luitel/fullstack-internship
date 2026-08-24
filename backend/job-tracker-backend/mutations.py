@@ -1,22 +1,27 @@
 import strawberry
-from mutation_input import PostInput , PostDelete , UserRegister
+from mutation_input import PostInput , PostDelete ,PostUpdate, UserRegister 
 import schemas
 import models
 from utils import get_password_hash
 
+
+# POSTS mutation
 @strawberry.type
 class PostMutation:
+    # Mutation to create posts on the database
     @strawberry.mutation
     def create_posts(self,post:PostInput , info:strawberry.Info) -> schemas.Posts:
        db = info.context['db']
-    #    user_id = info.context['user_id']
+       user_id = info.context.get('user_id')
+       if user_id is None:
+           raise Exception("User not logged in")
        
        new_post = models.Post(
-            id = post.id,
+            # id = post.id,
             title=post.title,
             content=post.content,
             published=post.published,
-            user_id=post.user_id
+            user_id= user_id
             )
        db.add(new_post)
        db.commit()
@@ -29,26 +34,27 @@ class PostMutation:
            created_at= new_post.created_at,
            user_id = new_post.user_id)
        
+    # Mutation to update posts on the database
     @strawberry.mutation
-    def update_posts(self, info: strawberry.Info, post_input: PostInput) -> schemas.Posts:
+    def update_posts(self, info: strawberry.Info, post_input: PostUpdate) -> schemas.Posts:
         db = info.context['db']
-        user_id = info.context['user_id']
+        user_id = info.context.get('user_id')
+        if user_id is None:
+            raise Exception("Not Authenticated")
 
-        post_query = db.query(models.Post).filter(models.Post.id == post_input.id)
-        post = post_query.first()
+        post = (
+            db.query(models.Post)
+            .filter(models.Post.id == post_input.post_id, models.Post.user_id == user_id)
+            .first()
+        )
 
         if not post:
-            raise Exception(f"Post with id {post_input.id} not found")
+            raise Exception(f"Post with id {post_input.post_id} not found")
 
-        post_query.update(
-            {
-                "title": post_input.title,
-                "content": post_input.content,
-                "published": post_input.published,
-                "user_id": user_id,
-            },
-            synchronize_session=False
-        )
+        post.title = post_input.title
+        post.content = post_input.content
+        post.published = post_input.published
+
         db.commit()
         db.refresh(post)
 
@@ -61,10 +67,15 @@ class PostMutation:
             user_id=post.user_id
         )
     
+    # Mutation to delete posts from the database
     @strawberry.mutation
     def delete_posts(self , info: strawberry.Info , post_input : PostDelete) -> schemas.Posts:
         db = info.context["db"]
-        post_query = db.query(models.Post).filter(models.Post.id == post_input.id)
+        user_id = info.context["user_id"]
+        if not user_id:
+            raise Exception('Not Authenticated')
+
+        post_query = db.query(models.Post).filter(models.Post.id == post_input.id , models.Post.user_id == user_id)
         post = post_query.first()
         if not post:
             raise Exception(f"Post with id {post_input.id} not found")
@@ -83,8 +94,10 @@ class PostMutation:
         return deleted_post
     
 
+# User Mutation for CRUD
 @strawberry.type
 class UserMutation:
+    # Mutation to create user on the database
     @strawberry.mutation
     def create_user(self , info: strawberry.Info ,user_input : UserRegister ) -> schemas.Users:
         db = info.context['db']
