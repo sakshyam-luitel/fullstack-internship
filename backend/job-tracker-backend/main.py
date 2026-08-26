@@ -6,8 +6,9 @@ from oauth2 import get_context
 from queries import PostQuery , UserQuery
 from mutations import PostMutation , UserMutation
 from auth import LoginUserMutation
-        
-        
+
+from fastapi.middleware.cors import CORSMiddleware
+                
 @strawberry.type
 class Query(
     PostQuery,
@@ -29,3 +30,13 @@ graphql_app = GraphQLRouter(schema , context_getter = get_context)
 
 app = FastAPI()
 app.include_router(graphql_app , prefix = '/graphql')
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins = [
+        "http://localhost:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=["*"]
+)
