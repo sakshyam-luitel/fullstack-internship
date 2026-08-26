@@ -7,7 +7,6 @@ dependencies = [
     "alembic>=1.13.0",
     "sqlalchemy>=2.0.0",
     "psycopg2-binary>=2.9.0",
-    "uvicorn>=0.52.1",
     "graphene>=3.4.3",
     "graphene-sqlalchemy>=2.1.0",
     "black>=26.5.1",
@@ -17,4 +16,5 @@ dependencies = [
     "pyjwt>=2.13.0",
     "pwdlib[argon2]>=0.3.1",
     "python-jose[cryptography]>=3.5.0",
+    "uvicorn>=0.52.1",
 ]
