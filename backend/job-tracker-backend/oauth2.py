@@ -15,7 +15,7 @@ from fastapi import Request
 
 SECRET_KEY = "YUWr9G4VwJ58umgtcqbaoEnGeYcAsrbnNn3SnLBHiAu"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 120
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/graphql')
 
