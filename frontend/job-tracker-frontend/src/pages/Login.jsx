@@ -10,7 +10,7 @@ function Login() {
   const [loginUser, { data, loading, error }] = useMutation(LOGIN);
   // console.log(loginUser)
 
-  const handleSubmit = async (event) => {
+  const handleLogin = async (event) => {
     event.preventDefault();
 
     try {
@@ -49,7 +49,7 @@ function Login() {
             </p>
           </div>
 
-          <form className="space-y-5" onSubmit={handleSubmit}>
+          <form className="space-y-5" onSubmit={handleLogin}>
             <div className="space-y-2">
               <label
                 htmlFor="email"
