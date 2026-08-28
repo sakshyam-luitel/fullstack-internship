@@ -1,5 +1,5 @@
 import { POSTS } from "../graphql/queries";
-import { DELETEPOST } from "../graphql/mutation";
+import { CREATEPOST, DELETEPOST , UPDATEPOST } from "../graphql/mutation";
 
 export async function getPosts() {
   try {
@@ -63,6 +63,67 @@ export async function deletePost(id){
             console.log('Error occured while fetching data' , result.errors)
         }
         return result?.data?.deletePosts?? [];
+    }catch(error){
+        console.log(error)
+    }
+}
+
+export async function updatePosts(id , title , description){
+    try{
+        const token = localStorage.getItem('token')
+        const response = await fetch('http://localhost:8000/graphql',{
+            method : "POST",
+            headers : {
+                "Content-Type":"application/json",
+                Authorization : `Bearer ${token}`
+            },
+            body : JSON.stringify({
+                query : UPDATEPOST,
+                variables :{ postInput : {postId : id , title : title , content : description}}
+            })
+        })
+
+        if(!response.ok){
+            throw new Error(`HTTP error : ${response.status} , ${response.statusText}`)
+        }
+
+        const result = await response.json()
+        if(result?.errors){
+            console.log("Error while updating data", result.errors)
+        }
+
+        return response?.data?.updatePosts
+
+    }catch(error){
+        console.error(error)
+    }
+}
+
+export async function createPost(title , description){
+    try{
+        const token = localStorage.getItem('token')
+        const response = await fetch('http://localhost:8000/graphql',{
+            method : "POST",
+            headers : {
+                "Content-Type":"application/json",
+                Authorization : `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                query : CREATEPOST,
+                variables : { post : { title : title , content :description }}
+            })
+        })
+
+        if(!response.ok){
+            throw new Error(`HTTP error :${response.status} , ${response.errors}`)
+        }
+
+        const result = response.json()
+        if(result?.errors){
+            console.log("Error while creating data:",result.errors)
+        }
+
+        return result?.data?.createPost
     }catch(error){
         console.log(error)
     }

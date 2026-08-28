@@ -19,13 +19,12 @@ export const REGISTER = gql`
     }
 `;
 
-export const CREATEPOST = gql`
-    mutation($userCreatePost : PostInput!){
-        createPosts(userCreatePost : $userCreatePost)
+export const CREATEPOST = `
+    mutation($post : PostInput!){
+        createPosts(post: $post)
         {
             title
             content
-            createdAt
         }
     }
 `
@@ -40,9 +39,9 @@ export const DELETEPOST = `
     }
 `;
 
-export const UPDATEPOST = gql`
-    mutation UpdatePosts($userUpdatePost : PostUpdate!){
-        updatePosts(userUpdatePost : $userUpdatePost){
+export const UPDATEPOST = `
+    mutation UpdatePosts($postInput : PostUpdate!){
+        updatePosts(postInput: $postInput){
             title
             content
             published

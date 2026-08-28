@@ -7,7 +7,7 @@ class PostInput:
     # id :int
     title:str
     content: str
-    published : bool
+    # published : bool
     # user_id : int
 
 @strawberry.input
@@ -15,7 +15,7 @@ class PostUpdate:
     post_id : int
     title : str
     content : str
-    published : bool
+    # published : bool
 
 @strawberry.input
 class PostDelete:

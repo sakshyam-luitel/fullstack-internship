@@ -10,17 +10,15 @@ from utils import get_password_hash
 class PostMutation:
     # Mutation to create posts on the database
     @strawberry.mutation
-    def create_posts(self,post:PostInput , info:strawberry.Info) -> schemas.Posts:
+    def create_posts(self,post : PostInput , info:strawberry.Info) -> schemas.Posts:
        db = info.context['db']
        user_id = info.context.get('user_id')
        if user_id is None:
            raise Exception("User not logged in")
        
        new_post = models.Post(
-            # id = post.id,
             title=post.title,
             content=post.content,
-            published=post.published,
             user_id= user_id
             )
        db.add(new_post)
@@ -31,6 +29,7 @@ class PostMutation:
            id = new_post.id,
            title = new_post.title,
            content = new_post.content,
+           published = new_post.published,
            created_at= new_post.created_at,
            user_id = new_post.user_id)
        
@@ -53,7 +52,7 @@ class PostMutation:
 
         post.title = post_input.title
         post.content = post_input.content
-        post.published = post_input.published
+        # post.published = post_input.published
 
         db.commit()
         db.refresh(post)

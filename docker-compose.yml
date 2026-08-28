@@ -45,22 +45,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # frontend:
-  #   container_name: job-tracker-frontend
-  #   build:
-  #     context: ./frontend/job-tracker-frontend
-  #     dockerfile: Dockerfile
-  #   volumes:
-  #     - ./frontend/job-tracker-frontend:/job-tracker-frontend
-  #     - /job-tracker-frontend/node_modules
-  #   ports:
-  #     - "5000:5000"
-  #   environment:
-  #     - VITE_API_URL=http://localhost:8000
-  #     - HOST=0.0.0.0
-  #   depends_on:
-  #     - backend
-  #   restart: unless-stopped
+  frontend:
+    container_name: job-tracker-frontend
+    build:
+      context: ./frontend/job-tracker-frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ./frontend/job-tracker-frontend:/job-tracker-frontend
+      - /job-tracker-frontend/node_modules
+    ports:
+      - "5000:5000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - HOST=0.0.0.0
+    depends_on:
+      - backend
+    restart: unless-stopped
 
 volumes:
   postgres_data:
