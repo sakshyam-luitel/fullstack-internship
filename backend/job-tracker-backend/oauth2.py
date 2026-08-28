@@ -7,12 +7,6 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from fastapi import Request
 
-
-
-#SECRET_KEY
-#Algorithm
-#Expiration Time
-
 SECRET_KEY = "YUWr9G4VwJ58umgtcqbaoEnGeYcAsrbnNn3SnLBHiAu"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
@@ -46,10 +40,6 @@ def verify_access_token(token: str = Depends(oauth2_scheme) , db : Session = Dep
         token_data = schemas.TokenData(id=user_id)
     except JWTError:
         raise credentials_exception
-    
-    # user = db.query(models.User).filter(models.User.id == token_data.id).first()
-
-    # return user
     return token_data
 
 async def get_context(
