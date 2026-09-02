@@ -11,4 +11,6 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "strawberry-graphql[fastapi]>=0.327.0",
     "psycopg2>=2.9.12",
+    "pyjwt>=2.13.0",
+    "pwdlib[argon2]>=0.3.1",
 ]

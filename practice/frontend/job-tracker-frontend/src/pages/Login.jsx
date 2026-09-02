@@ -10,6 +10,8 @@ function Login() {
   const [loginUser, { data, loading, error }] = useMutation(LOGIN);
   // console.log(loginUser)
 
+
+  // Triggered when pressed login button
   const handleLogin = async (event) => {
     event.preventDefault();
 

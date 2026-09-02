@@ -1,5 +1,7 @@
 import { gql } from "@apollo/client";
 
+
+// mutation to login users
 export const LOGIN = gql`
   mutation LoginUser($userInput: UserLogin!) {
     loginUser(userInput: $userInput) {
@@ -9,6 +11,8 @@ export const LOGIN = gql`
   }
 `;
 
+
+// mutation to register users
 export const REGISTER = gql`
     mutation CreateUser($userInput : UserRegister!){
         createUser(userInput : $userInput){
@@ -19,6 +23,7 @@ export const REGISTER = gql`
     }
 `;
 
+//mutation to create post
 export const CREATEPOST = `
     mutation($post : PostInput!){
         createPosts(post: $post)
@@ -29,6 +34,7 @@ export const CREATEPOST = `
     }
 `
 
+// mutation to delete post
 export const DELETEPOST = `
     mutation DeletePost($postInput : PostDelete! ){
         deletePosts(postInput : $postInput){
@@ -39,6 +45,7 @@ export const DELETEPOST = `
     }
 `;
 
+//mutation to update post
 export const UPDATEPOST = `
     mutation UpdatePosts($postInput : PostUpdate!){
         updatePosts(postInput: $postInput){

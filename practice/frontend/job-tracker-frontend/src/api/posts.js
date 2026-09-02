@@ -1,6 +1,8 @@
 import { POSTS } from "../graphql/queries";
 import { CREATEPOST, DELETEPOST , UPDATEPOST } from "../graphql/mutation";
 
+
+// function to get posts from the backend
 export async function getPosts() {
   try {
     const token = localStorage.getItem("token");
@@ -40,6 +42,7 @@ export async function getPosts() {
   }
 }
 
+// function to delete post from backend
 export async function deletePost(id){
     try{
         const token = localStorage.getItem('token')
@@ -68,6 +71,7 @@ export async function deletePost(id){
     }
 }
 
+// function to update posts
 export async function updatePosts(id , title , description){
     try{
         const token = localStorage.getItem('token')
@@ -99,6 +103,8 @@ export async function updatePosts(id , title , description){
     }
 }
 
+
+// function to create posts
 export async function createPost(title , description){
     try{
         const token = localStorage.getItem('token')
