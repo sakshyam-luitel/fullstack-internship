@@ -17,11 +17,6 @@ load_dotenv()
 
 app = FastAPI()
 
-# my_posts = [
-#     {"title" : "title of post 1", "content" : "content of post 1" , "id" : 1},
-#     {"title" : "favourite foods" , "content" : "I like pizza" , "id" : 2},
-# ]
-
 @app.get('/')
 async def root():
     return {'hello':'my friend'}

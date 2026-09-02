@@ -1,9 +1,16 @@
 import strawberry
-from sqlalchemy import Uuid
+import uuid
 from pydantic import EmailStr
+from typing import Optional
+
+@strawberry.input
+class UserLoginInput:
+    email : EmailStr
+    password : str
 
 @strawberry.input
 class UserMutationInput:
+    department_id : Optional[uuid.UUID] = None
     name : str
     email : EmailStr
     password : str
@@ -32,4 +39,13 @@ class ProfessorProfileInput:
     academic_rank : str
     max_students : str
     
+@strawberry.input
+class ProposalsInput:
+    status : str
+    
+@strawberry.input
+class Papers:
+    supervisor_id : uuid.UUID
+    title : str
+    status : str
     
