@@ -3,7 +3,10 @@ from fastapi import FastAPI
 from strawberry.fastapi import GraphQLRouter
 import os
 from . import models , database
-
+from . mutations import UserMutation
+from . auth import Login
+from . schemas import TokenSchema , TokenData , UserSchema
+from . oauth2 import get_context
 
 models.Base.metadata.create_all(bind = database.engine)
 
@@ -20,14 +23,16 @@ while True:
 
 
 @strawberry.type
-class Query:
-    @strawberry.field
-    def hello(self) -> str:
-        return "Hello world"
+class Mutation(UserMutation, Login):
+    pass
 
-schema = strawberry.Schema(Query)
+@strawberry.type
+class Schema(TokenData , TokenSchema , UserSchema):
+    pass
 
-graphql_app = GraphQLRouter(schema)
+schema = strawberry.Schema(Schema , Mutation)
+
+graphql_app = GraphQLRouter(schema , context_getter = get_context )
 
 app = FastAPI()
 app.include_router(graphql_app , prefix = '/graphql')

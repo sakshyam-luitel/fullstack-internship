@@ -1,5 +1,8 @@
 import strawberry
 from typing import Optional
+    
+import uuid
+
 
 @strawberry.type
 class TokenSchema:
@@ -9,3 +12,11 @@ class TokenSchema:
 @strawberry.type
 class TokenData:
     id : Optional[int] = None
+
+@strawberry.type
+class UserSchema:
+    name : str
+    email : str
+    department_id : uuid.UUID
+    role : str
+    
