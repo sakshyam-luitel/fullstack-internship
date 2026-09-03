@@ -14,7 +14,6 @@ engine = create_engine(SQL_ALCHEMY_DATABASE)
 SessionLocal = sessionmaker(autoflush=False , autocommit = False ,bind = engine)
 
 Base = declarative_base()
-Base.metadata.create_all(bind = engine)
 
 def get_db():
     db = SessionLocal()

@@ -1,18 +1,18 @@
 import strawberry
 import uuid
-from pydantic import EmailStr
+
 from typing import Optional
 
 @strawberry.input
 class UserLoginInput:
-    email : EmailStr
+    email : str
     password : str
 
 @strawberry.input
 class UserMutationInput:
     department_id : Optional[uuid.UUID] = None
     name : str
-    email : EmailStr
+    email : str
     password : str
     role : str
     
