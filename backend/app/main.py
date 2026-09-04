@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from strawberry.fastapi import GraphQLRouter
 import os
 from . import models , database
-from . mutations import UserMutation
+from . mutations import UserMutation , DepartmentMutation , DegreeProgramsMutation , ClustersMutation
 from . auth import Login
 from . schemas import TokenSchema , TokenData , UserSchema
 from . oauth2 import get_context
@@ -23,7 +23,7 @@ while True:
 
 
 @strawberry.type
-class Mutation(UserMutation, Login):
+class Mutation(UserMutation, Login , DepartmentMutation , DegreeProgramsMutation , ClustersMutation):
     pass
 
 @strawberry.type
