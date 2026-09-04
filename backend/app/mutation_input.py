@@ -25,10 +25,12 @@ class DepartmentMutationInput:
 class DegreeProgramsInput:
     name : str
     level : str
+    department_id : uuid.UUID
 
 @strawberry.input
 class ClustersInput:
     name : str
+    department_id : uuid.UUID
     
 @strawberry.input
 class StudentProfilesInput:

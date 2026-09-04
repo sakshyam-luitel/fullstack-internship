@@ -20,3 +20,17 @@ class UserSchema:
     department_id : uuid.UUID
     role : str
     
+@strawberry.type
+class DepartmentSchema:
+    name : str
+    code : str
+    
+@strawberry.type
+class DegreeProgramsSchema:
+    name : str
+    level : str
+    # department_id : uuid.UUID
+    
+@strawberry.type
+class ClustersSchema:
+    name : str
