@@ -55,7 +55,7 @@ class StudentProfiles(Base):
     degree_program_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("degreeprograms.id", ondelete="CASCADE"), nullable=False)
     # FIX: added — every student needs a supervisor (discussed earlier), points back into users.id
     supervisor_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
-    status = Column(String, nullable=False)
+    status = Column(String, nullable=False , server_default = "active")
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
@@ -65,7 +65,7 @@ class ProfessorProfiles(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, primary_key=True)
     academic_rank = Column(String, nullable=False)
     max_students = Column(Integer, nullable=False)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+    created_at = Column(TIMESTAMP(timezone=True),nullable = False , server_default=text("now()"))
 
 
 class Proposals(Base):
@@ -78,7 +78,15 @@ class Proposals(Base):
     reviewed_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
     cluster_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("clusters.id", ondelete="CASCADE"), nullable=True)
+    supervisor_id : Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
 
+class ProposalCandidates(Base):
+    __tablename__ = "proposalcandidates"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+    proposal_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False)
+    student_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 class Papers(Base):
     __tablename__ = "papers"

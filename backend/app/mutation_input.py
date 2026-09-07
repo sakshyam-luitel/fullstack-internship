@@ -34,16 +34,34 @@ class ClustersInput:
     
 @strawberry.input
 class StudentProfilesInput:
+    user_id : uuid.UUID
+    degree_program_id : uuid.UUID
+    supervisor_id : uuid.UUID
     status : str
 
 @strawberry.input
 class ProfessorProfileInput:
+    user_id : uuid.UUID
     academic_rank : str
     max_students : str
     
 @strawberry.input
 class ProposalsInput:
+    # submitted_by : uuid.UUID
+    title : str
     status : str
+    
+@strawberry.input
+class ProposalsReviewInput:
+    proposal_id : uuid.UUID
+    cluster_id : uuid.UUID
+    supervisor_id : uuid.UUID
+    status : str
+
+@strawberry.input
+class ProposalCandidatesMutation:
+    proposal_id : uuid.UUID
+    student_id : uuid.UUID
     
 @strawberry.input
 class Papers:

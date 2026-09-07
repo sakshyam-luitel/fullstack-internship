@@ -34,3 +34,34 @@ class DegreeProgramsSchema:
 @strawberry.type
 class ClustersSchema:
     name : str
+    
+@strawberry.type
+class StudentProfileSchema:
+    status : str
+
+@strawberry.type
+class ProfessorProfileSchema:
+    academic_rank : str
+    max_students : int
+    
+    
+@strawberry.type
+class ProposalSchemaUser:
+    submitted_by : uuid.UUID
+    title : str
+    status : str
+
+@strawberry.type
+class ProposalSchemaAdmin:
+    id : uuid.UUID
+    title : str
+    status : str
+    reviewed_by : uuid.UUID
+    cluster_id : uuid.UUID
+    supervisor_id : uuid.UUID
+
+@strawberry.type
+class ProposalCandidatesSchema:
+    proposal_id : uuid.UUID
+    student_id : uuid.UUID
+    
