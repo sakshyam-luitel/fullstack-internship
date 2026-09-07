@@ -4,7 +4,7 @@ from . import mutation_input
 from . import schemas
 from . import models
 from . utils import get_password_hash
-from . permissions import IsAdmin
+from . permissions import IsAdmin , IsStudent
 
 @strawberry.type
 class UserMutation:
@@ -88,5 +88,114 @@ class ClustersMutation:
             name = cluster.name
         )
         
+@strawberry.type
+class StudentProfilesMutation:
+    @strawberry.mutation(permission_classes = [IsAdmin])
+    def create_student_profile(self , info : strawberry.Info , admin_input : mutation_input.StudentProfilesInput) -> schemas.StudentProfileSchema:
+        db = info.context["db"]
+        
+        student = models.StudentProfiles(
+            user_id = admin_input.user_id,
+            degree_program_id = admin_input.degree_program_id,
+            supervisor_id = admin_input.supervisor_id,
+            status = admin_input.status
+        )
+        
+        db.add(student)
+        db.commit()
+        db.refresh(student)
 
+        return schemas.StudentProfileSchema(
+            status =  student.status
+        )
+        
+@strawberry.type
+class ProfessorProfileMutation:
+    @strawberry.mutation(permission_classes = [IsAdmin])
+    def create_professor_profile(self , info : strawberry.Info , admin_input : mutation_input.ProfessorProfileInput) -> schemas.ProfessorProfileSchema:
+        db = info.context["db"]
+        professor = models.ProfessorProfiles(
+            user_id = admin_input.user_id,
+            academic_rank = admin_input.academic_rank,
+            max_students = admin_input.max_students
+        )
+        
+        db.add(professor)
+        db.commit()
+        db.refresh(professor)
+
+        return schemas.ProfessorProfileSchema(
+            academic_rank = professor.academic_rank,
+            max_student = professor.max_students
+        )
+        
+@strawberry.type
+class ProposalsMutation:
+    @strawberry.mutation(permission_classes=[IsStudent])
+    def create_proposal_by_user(self , info : strawberry.Info , student_input : mutation_input.ProposalsInput) -> schemas.ProposalSchemaUser:
+        db = info.context["db"]
+        current_user = info.context["current_user"]
+        proposal = models.Proposals(
+            submitted_by = current_user.id,
+            title = student_input.title,
+            status = student_input.status,
+        )
+        
+        db.add(proposal)
+        db.commit()
+        db.refresh(proposal)
+
+        return schemas.ProposalSchemaUser(
+            submitted_by = proposal.submitted_by,
+            title = proposal.title,
+            status = proposal.status,
+        )
     
+    @strawberry.mutation(permission_classes=[IsAdmin])
+    def assign_proposal(self, info: strawberry.Info, admin_input: mutation_input.ProposalsReviewInput) -> schemas.ProposalSchemaAdmin:
+        db = info.context["db"]
+
+        proposal = db.query(models.Proposals).filter(
+            models.Proposals.id == admin_input.proposal_id
+        ).first()
+
+        if not proposal:
+            raise Exception("Proposal not found")
+        
+        proposal.cluster_id = admin_input.cluster_id
+        proposal.supervisor_id = admin_input.supervisor_id
+        proposal.status = "assigned"
+        # reviewed_by stays untouched here — that gets set later, by the professor's review, not admin's assignment
+
+        db.commit()
+        db.refresh(proposal)
+
+        return schemas.ProposalSchemaAdmin(
+            id=proposal.id,
+            title = proposal.title,
+            status=proposal.status,
+            reviewed_by = proposal.reviewed_by,
+            cluster_id=proposal.cluster_id,
+            supervisor_id=proposal.supervisor_id,
+            
+        )
+    
+@strawberry.type
+class ProposalCandidateMutation:
+    @strawberry.mutation
+    def create_proposal_candidate(self , info : strawberry.Info , student_input: mutation_input.ProposalCandidatesMutation) -> schemas.ProposalCandidatesSchema:
+        db = info.context["db"]
+        proposal_candidate = models.ProposalCandidates(
+            proposal_id = student_input.proposal_id,
+            student_id = student_input.student_id
+        )    
+        
+        db.add(proposal_candidate)
+        db.commit()
+        db.refresh(proposal_candidate)
+
+        return schemas.ProposalCandidatesSchema(
+            proposal_id = proposal_candidate.proposal_id,
+            student_id = proposal_candidate.student_id
+        )
+        
