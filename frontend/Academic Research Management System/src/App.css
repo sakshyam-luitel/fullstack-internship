@@ -1,1 +1,6 @@
-@import 'tailwindcss'
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Source Serif 4", serif;
+  --font-sans: "Inter", sans-serif;
+}

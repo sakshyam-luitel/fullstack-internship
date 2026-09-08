@@ -24,10 +24,13 @@ class UserMutation:
         db.refresh(user)
         
         return schemas.UserSchema(
+            id=user.id,
+            department_id=user.department_id,
             name = user.name,
             email = user.email,
-            department_id = user.department_id,
+            password="********",
             role = user.role
+            ,created_at=user.created_at,
         )
     
 
