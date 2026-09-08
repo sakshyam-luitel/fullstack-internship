@@ -1,6 +1,6 @@
 import strawberry
 from typing import Optional
-    
+from datetime import datetime
 import uuid
 
 
@@ -15,10 +15,13 @@ class TokenData:
 
 @strawberry.type
 class UserSchema:
+    id: uuid.UUID
+    department_id: uuid.UUID
     name : str
     email : str
-    department_id : uuid.UUID
+    password : str
     role : str
+    created_at: datetime
     
 @strawberry.type
 class DepartmentSchema:
