@@ -7,7 +7,7 @@ interface AuthFieldProps extends InputHTMLAttributes<HTMLInputElement> {
 
 // Render a consistent form field and add visibility controls when the field is a password.
 function AuthField({ label, id, type = "text", ...inputProps }: AuthFieldProps) {
-  const [isVisible, setIsVisible] = useState(false);
+  const [isVisible, setIsVisible] = useState<boolean>(false);
   const isPassword = type === "password";
 
   return (
