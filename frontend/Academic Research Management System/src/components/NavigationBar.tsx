@@ -1,14 +1,20 @@
 import Button from "./Button";
 import BrandMark from "./BrandMark";
-import { Building2, Users } from "lucide-react";
+import { Building2, LogOut, Users } from "lucide-react";
 
 interface NavigationBarProps {
   open: boolean;
   onClose: () => void;
+  role: "admin" | "super_admin";
+  onProfile: () => void;
+  onLogout: () => void;
+  onUsers: () => void;
+  onDepartments: () => void;
+  activeView: "users" | "management" | "profile";
 }
 
 // Provide persistent dashboard branding and navigation actions from the left rail.
-function NavigationBar({ open, onClose }: NavigationBarProps) {
+function NavigationBar({ open, onClose, role, onProfile, onLogout, onUsers, onDepartments, activeView }: NavigationBarProps) {
   return (
     <>
       {open && (
@@ -28,20 +34,34 @@ function NavigationBar({ open, onClose }: NavigationBarProps) {
       </p>
       <nav className="mt-10 space-y-2" aria-label="Main navigation">
         <Button
+          label="My profile"
+          icon={Users}
+          color="slate"
+          onClick={() => { onProfile(); onClose(); }}
+          className={`w-full justify-start font-medium ${activeView === "profile" ? "border-blue-400 bg-blue-600 text-white" : "!border-slate-600 !bg-slate-700/60 !text-slate-200 hover:!border-slate-400 hover:!bg-slate-700 hover:!text-white"}`}
+        />
+        <Button
           label="Users"
           icon={Users}
           color="blue"
-          onClick={onClose}
-          className="w-full justify-start border-blue-400 bg-blue-600 font-medium text-white shadow-lg shadow-blue-950/25 hover:border-blue-300 hover:bg-blue-500"
+          onClick={() => { onUsers(); onClose(); }}
+          className={`w-full justify-start font-medium ${activeView === "users" ? "border-blue-400 bg-blue-600 text-white shadow-lg shadow-blue-950/25 hover:border-blue-300 hover:bg-blue-500" : "!border-slate-600 !bg-slate-700/60 !text-slate-200 hover:!border-slate-400 hover:!bg-slate-700 hover:!text-white"}`}
         />
         <Button
-          label="Departments"
+          label={role === "super_admin" ? "Departments" : "Research tools"}
           icon={Building2}
           color="slate"
-          onClick={onClose}
-          className="w-full justify-start !border-slate-600 !bg-slate-700/60 font-medium !text-slate-200 hover:!border-slate-400 hover:!bg-slate-700 hover:!text-white"
+          onClick={() => { onDepartments(); onClose(); }}
+          className={`w-full justify-start font-medium ${activeView === "management" ? "border-blue-400 bg-blue-600 text-white shadow-lg shadow-blue-950/25 hover:border-blue-300 hover:bg-blue-500" : "!border-slate-600 !bg-slate-700/60 !text-slate-200 hover:!border-slate-400 hover:!bg-slate-700 hover:!text-white"}`}
         />
       </nav>
+      <Button
+        label="Log out"
+        icon={LogOut}
+        color="slate"
+        onClick={() => { onLogout(); onClose(); }}
+        className="mt-4 w-full justify-start font-medium !border-slate-600 !bg-slate-700/60 !text-slate-200 hover:!border-red-400 hover:!bg-red-950/30 hover:!text-red-200"
+      />
       <p className="mt-auto text-xs leading-5 text-slate-500">
         Academic Research Management System
       </p>
