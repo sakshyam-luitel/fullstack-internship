@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from strawberry.fastapi import GraphQLRouter
 import os
 from . import models , database
-from . mutations import UserMutation , DepartmentMutation , DegreeProgramsMutation , ClustersMutation , StudentProfilesMutation , ProfessorProfileMutation , ProposalsMutation
+from . mutations import UserMutation , DepartmentMutation , DegreeProgramsMutation , ClustersMutation , StudentProfilesMutation , ProfessorProfileMutation , ProposalsMutation, ProposalCandidateMutation
 from . auth import Login
 from . queries import UserQuery
 from . schemas import TokenSchema , TokenData , UserSchema
@@ -25,7 +25,7 @@ while True:
 
 
 @strawberry.type
-class Mutation(UserMutation, Login , DepartmentMutation , DegreeProgramsMutation , ClustersMutation , StudentProfilesMutation , ProfessorProfileMutation , ProposalsMutation):
+class Mutation(UserMutation, Login , DepartmentMutation , DegreeProgramsMutation , ClustersMutation , StudentProfilesMutation , ProfessorProfileMutation , ProposalsMutation, ProposalCandidateMutation):
     pass
 
 @strawberry.type
@@ -39,7 +39,8 @@ graphql_app = GraphQLRouter(schema , context_getter = get_context )
 app = FastAPI()
 
 origins = [
-    'http://localhost:5173'
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
 ]
 
 app.add_middleware(

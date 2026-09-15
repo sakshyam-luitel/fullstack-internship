@@ -4,17 +4,29 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.sqltypes import TIMESTAMP
 from sqlalchemy.sql.expression import text
 from app.database import Base
+from enum import Enum
+import strawberry
+
+from sqlalchemy import Enum as SAEnum
+
+@strawberry.enum
+class Role( Enum ):
+    super_admin = "super_admin"
+    admin = "admin"
+    student = "student"
+    professor = "professor"
+    external = "external"
 
 
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
-    department_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False)
+    department_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True)
     name = Column(String, nullable=False)
     email = Column(String, nullable=False, unique=True)
     password = Column(String, nullable=False)
-    role = Column(String, nullable=False)
+    role:Mapped[Role] = mapped_column(SAEnum(Role) , nullable = False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
@@ -24,6 +36,7 @@ class Department(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
     name = Column(String, nullable=False)
     code = Column(String, nullable=False)
+    is_active = Column(Boolean , nullable = False , server_default = text("true"))
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
@@ -72,7 +85,7 @@ class Proposals(Base):
     __tablename__ = "proposals"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, primary_key=True, default=uuid.uuid4)
-    submitted_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
+    submitted_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
     title = Column(String, nullable=False)
     status = Column(String, nullable=False)
     reviewed_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
