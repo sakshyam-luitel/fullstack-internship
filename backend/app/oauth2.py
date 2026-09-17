@@ -2,7 +2,7 @@ import jwt
 from datetime import datetime , timezone , timedelta
 from jwt.exceptions import InvalidTokenError
 from . schemas import TokenData
-from fastapi import Request, Depends
+from fastapi import Request, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from . database import get_db , SessionLocal
 from . models import User
@@ -71,4 +71,24 @@ async def get_context(
         "db": db,
         "current_user": current_user,
     }
-    
+
+
+def get_current_user_rest(
+    token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(database.get_db),
+) -> User:
+    """Auth dependency for the plain REST file routes — reuses the exact same
+    JWT decode as get_context (GraphQL's context getter), not a separate auth
+    path, just adapted to FastAPI's dependency style with a proper 401."""
+    unauthorized = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if not token or not SECRET_KEY:
+        raise unauthorized
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("user_id")
+    except InvalidTokenError:
+        raise unauthorized
+    user = db.query(User).filter(User.id == user_id).first() if user_id else None
+    if not user:
+        raise unauthorized
+    return user
