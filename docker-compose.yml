@@ -27,6 +27,9 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
     ports:
       - "8000:8000"
+    volumes:
+      - backend_uploads:/app/uploads
+      - proposal_storage:/app/storage
 
   frontend:
     build: "./frontend/Academic Research Management System"
@@ -38,3 +41,5 @@ services:
 
 volumes:
   postgres_data:
+  backend_uploads:
+  proposal_storage:
