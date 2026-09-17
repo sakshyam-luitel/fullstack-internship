@@ -1,4 +1,5 @@
 import strawberry
+from sqlalchemy import func
 from . import mutation_input, oauth2, utils
 from .models import User
 from .schemas import TokenSchema
@@ -8,7 +9,8 @@ class Login:
     @strawberry.mutation
     def login(self, info: strawberry.Info, user_input: mutation_input.UserLoginInput) -> TokenSchema:
         db = info.context["db"]
-        user = db.query(User).filter(user_input.email == User.email).first()
+        # Emails are unique regardless of letter case (see mutations._ensure_email_available).
+        user = db.query(User).filter(func.lower(User.email) == user_input.email.strip().lower()).first()
         if not user:
             raise Exception("Invalid Credentials")
         if not utils.verify_password(user_input.password , user.password):
