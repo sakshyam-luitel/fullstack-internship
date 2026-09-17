@@ -1,2 +1,7 @@
 .env
 .venv
+backend/storage/
+backend/uploads/
+backend/uploads/
+backend/storage/
+CLAUDE.md

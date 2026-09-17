@@ -4,9 +4,11 @@ import { Eye, EyeOff, Menu, Pencil, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CREATE_USER, UPDATE_USER } from "../mutations/mutations";
-import { CURRENT_USER_QUERY, DEPARTMENTSQUERY, USERSQUERY } from "../queries/queries";
+import { CURRENT_USER_QUERY, DEGREE_PROGRAMS_QUERY, DEPARTMENTSQUERY, PROFILES_QUERY, USERSQUERY } from "../queries/queries";
+import ProfileManagement, { type AdminProfile } from "../components/ProfileManagement";
 import { print } from "graphql";
 import AdminManagement from "./AdminManagement";
+import { resolveAvatarUrl, uploadAvatarImage } from "../utils/uploadAvatar";
 
 interface User {
   id: string;
@@ -16,12 +18,21 @@ interface User {
   password: string;
   role: string;
   createdAt: string;
+  degreeProgramId: string | null;
+  degreeLevel: string | null;
 }
 
 interface Department {
   id: string;
   name: string;
   code: string;
+}
+
+interface DegreeProgram {
+  id: string;
+  name: string;
+  level: string;
+  departmentId: string;
 }
 
 interface Profile {
@@ -31,6 +42,7 @@ interface Profile {
   email: string;
   role: string;
   createdAt: string;
+  avatarUrl: string | null;
 }
 
 interface CreateUserForm {
@@ -39,13 +51,29 @@ interface CreateUserForm {
   password: string;
   role: string;
   departmentId: string;
+  degreeLevel: string;
+  degreeProgramId: string;
 }
 
 interface EditUserForm {
   name: string;
   email: string;
   password: string;
+  degreeLevel: string;
+  degreeProgramId: string;
 }
+
+interface DegreeChoice {
+  degreeLevel: string;
+  degreeProgramId: string;
+}
+
+const DEGREE_LEVELS = [
+  { value: "bachelors", label: "Bachelor's" },
+  { value: "masters", label: "Master's" },
+  { value: "phd", label: "PhD" },
+];
+const degreeLevelLabel = (level: string) => DEGREE_LEVELS.find((item) => item.value === level.toLowerCase())?.label ?? level;
 
 interface GraphQLResult<T> {
   data?: T;
@@ -53,6 +81,8 @@ interface GraphQLResult<T> {
 }
 
 type AdminRole = "admin" | "super_admin";
+type RoleGroup = "professors" | "students" | "others";
+type StudentLevel = "bachelors" | "masters" | "phd" | "unset";
 
 function getAdminRole(): AdminRole {
   return localStorage.getItem("userRole") === "super_admin"
@@ -97,9 +127,18 @@ function AdminDashboard() {
   const canEditUsers = role === "admin";
   const [users, setUsers] = useState<User[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [degreePrograms, setDegreePrograms] = useState<DegreeProgram[]>([]);
+  const [profiles, setProfiles] = useState<AdminProfile[]>([]);
+  // Department admins browse people by role, and students by degree level, as accounts or profiles.
+  const [directoryView, setDirectoryView] = useState<"accounts" | "profiles">("accounts");
+  const [roleGroup, setRoleGroup] = useState<RoleGroup>("students");
+  const [studentLevel, setStudentLevel] = useState<StudentLevel>("bachelors");
+  const [notice, setNotice] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<"users" | "management" | "profile">(
     role === "super_admin" ? "management" : "users",
   );
@@ -115,6 +154,8 @@ function AdminDashboard() {
     name: "",
     email: "",
     password: "",
+    degreeLevel: "",
+    degreeProgramId: "",
   });
   const [form, setForm] = useState<CreateUserForm>({
     name: "",
@@ -122,10 +163,12 @@ function AdminDashboard() {
     password: "",
     role: "student",
     departmentId: "",
+    degreeLevel: "bachelors",
+    degreeProgramId: "",
   });
 
   const openDepartmentAdminForm = () => {
-    setForm({ name: "", email: "", password: "", role: "admin", departmentId: "" });
+    setForm({ name: "", email: "", password: "", role: "admin", departmentId: "", degreeLevel: "bachelors", degreeProgramId: "" });
     setCreateUserError(null);
     setIsCreateUserOpen(true);
   };
@@ -140,14 +183,20 @@ function AdminDashboard() {
       }
 
       try {
-        const [profileResult, usersResult, departmentsResult] = await Promise.all([
+        const [profileResult, usersResult, departmentsResult, degreeProgramsResult] = await Promise.all([
           requestGraphQL<{ currentUser: Profile }>(CURRENT_USER_QUERY),
           requestGraphQL<{ users: User[] }>(USERSQUERY),
           requestGraphQL<{ departments: Department[] }>(DEPARTMENTSQUERY),
+          requestGraphQL<{ degreePrograms: DegreeProgram[] }>(DEGREE_PROGRAMS_QUERY),
         ]);
         setProfile(profileResult.currentUser);
         setUsers(usersResult.users);
         setDepartments(departmentsResult.departments);
+        setDegreePrograms(degreeProgramsResult.degreePrograms);
+        if (getAdminRole() === "admin") {
+          const profilesResult = await requestGraphQL<{ profiles: AdminProfile[] }>(PROFILES_QUERY);
+          setProfiles(profilesResult.profiles);
+        }
       } catch (requestError) {
         setError(
           requestError instanceof Error
@@ -183,35 +232,67 @@ function AdminDashboard() {
   const usersWithoutDepartment = visibleUsers.filter(
     (user) => !user.departmentId || !departmentNames.has(user.departmentId),
   );
+  const roleOf = (user: User) => user.role.toLowerCase().replace(/^.*\./, "");
+  const professorUsers = visibleUsers.filter((user) => roleOf(user) === "professor");
+  const studentUsers = visibleUsers.filter((user) => roleOf(user) === "student");
+  const otherUsers = visibleUsers.filter((user) => !["professor", "student"].includes(roleOf(user)));
+  const studentsAtLevel = (level: StudentLevel) =>
+    studentUsers.filter((user) => (level === "unset" ? !user.degreeLevel : user.degreeLevel === level));
+  const roleTabs: { value: RoleGroup; label: string; count: number }[] = [
+    { value: "professors", label: "Professors", count: professorUsers.length },
+    { value: "students", label: "Students", count: studentUsers.length },
+    ...(otherUsers.length > 0 ? [{ value: "others" as RoleGroup, label: "Other", count: otherUsers.length }] : []),
+  ];
+  const levelTabs: { value: StudentLevel; label: string; count: number }[] = [
+    { value: "bachelors" as StudentLevel, label: "Bachelor's students", count: studentsAtLevel("bachelors").length },
+    { value: "masters" as StudentLevel, label: "Master's students", count: studentsAtLevel("masters").length },
+    { value: "phd" as StudentLevel, label: "PhD students", count: studentsAtLevel("phd").length },
+    { value: "unset" as StudentLevel, label: "Level not set", count: studentsAtLevel("unset").length },
+  ].filter((tab) => tab.value !== "unset" || tab.count > 0);
+  const groupUsers =
+    roleGroup === "professors" ? professorUsers : roleGroup === "others" ? otherUsers : studentsAtLevel(studentLevel);
+  const programName = (user: User) =>
+    degreePrograms.find((program) => program.id === user.degreeProgramId)?.name ??
+    profiles.find((profile) => profile.userId === user.id)?.degreeProgramName ??
+    "Not set";
   const studentCount = visibleUsers.filter(
     (user) => user.role.toLowerCase().replace(/^.*\./, "") === "student",
   ).length;
 
-  const renderUserTable = (groupUsers: User[]) => (
-    <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
+  const renderUserTable = (tableUsers: User[], grouped = false) => (
+    <table className={`w-full border-collapse text-left text-sm ${grouped ? "min-w-[760px]" : "min-w-[1100px]"}`}>
       <thead>
         <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-          <th className="px-4 py-3">ID</th>
-          <th className="px-4 py-3">Department</th>
+          {!grouped && <th className="px-4 py-3">ID</th>}
+          {!grouped && <th className="px-4 py-3">Department</th>}
           <th className="px-4 py-3">Name</th>
           <th className="px-4 py-3">Email</th>
-          <th className="px-4 py-3">Password</th>
-          <th className="px-4 py-3">Role</th>
+          {!grouped && <th className="px-4 py-3">Password</th>}
+          {grouped && roleGroup === "students" && <th className="px-4 py-3">Degree program</th>}
+          {(!grouped || roleGroup === "others") && <th className="px-4 py-3">Role</th>}
           <th className="px-4 py-3">Created At</th>
           <th className="px-4 py-3 text-right">Actions</th>
         </tr>
       </thead>
       <tbody>
-        {groupUsers.map((user) => (
+        {tableUsers.length === 0 && (
+          <tr>
+            <td colSpan={8} className="px-4 py-8 text-center text-slate-500">No users in this group yet.</td>
+          </tr>
+        )}
+        {tableUsers.map((user) => (
           <tr className="border-b border-slate-100" key={user.id}>
-            <td className="px-4 py-3 font-mono text-xs text-slate-500">{user.id}</td>
-            <td className="px-4 py-3 text-slate-600">
-              {departmentName(user.departmentId)}
-            </td>
+            {!grouped && <td className="px-4 py-3 font-mono text-xs text-slate-500">{user.id}</td>}
+            {!grouped && (
+              <td className="px-4 py-3 text-slate-600">
+                {departmentName(user.departmentId)}
+              </td>
+            )}
             <td className="px-4 py-3 font-medium text-slate-800">{user.name}</td>
             <td className="px-4 py-3 text-slate-600">{user.email}</td>
-            <td className="px-4 py-3 font-mono text-xs text-slate-500">********</td>
-            <td className="px-4 py-3 capitalize text-slate-600">{user.role}</td>
+            {!grouped && <td className="px-4 py-3 font-mono text-xs text-slate-500">********</td>}
+            {grouped && roleGroup === "students" && <td className="px-4 py-3 text-slate-600">{programName(user)}</td>}
+            {(!grouped || roleGroup === "others") && <td className="px-4 py-3 capitalize text-slate-600">{user.role}</td>}
             <td className="px-4 py-3 whitespace-nowrap text-slate-600">
               {new Date(user.createdAt).toLocaleString()}
             </td>
@@ -234,6 +315,100 @@ function AdminDashboard() {
     </table>
   );
 
+  const handleUploadAvatar = async (file: File) => {
+    setAvatarError(null);
+    setIsUploadingAvatar(true);
+    try {
+      const avatarUrl = await uploadAvatarImage(file);
+      setProfile((current) => (current ? { ...current, avatarUrl } : current));
+    } catch (uploadError) {
+      setAvatarError(uploadError instanceof Error ? uploadError.message : "Unable to upload image.");
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
+  // Reloads both lists: a user's degree level (and so their group) can change when an account is saved.
+  const reloadDirectory = async () => {
+    try {
+      const [usersResult, profilesResult] = await Promise.all([
+        requestGraphQL<{ users: User[] }>(USERSQUERY),
+        role === "admin" ? requestGraphQL<{ profiles: AdminProfile[] }>(PROFILES_QUERY) : Promise.resolve({ profiles: [] as AdminProfile[] }),
+      ]);
+      setUsers(usersResult.users);
+      setProfiles(profilesResult.profiles);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to reload users.");
+    }
+  };
+
+  const programsForLevel = (level: string) =>
+    degreePrograms.filter((program) => program.level.toLowerCase() === level).sort((first, second) => first.name.localeCompare(second.name));
+
+  const reloadDegreePrograms = async () => {
+    try {
+      const result = await requestGraphQL<{ degreePrograms: DegreeProgram[] }>(DEGREE_PROGRAMS_QUERY);
+      setDegreePrograms(result.degreePrograms);
+    } catch {
+      // The list only feeds the degree dropdowns; the next page load refreshes it.
+    }
+  };
+
+  // Changing the level picks that level's only program, so the common case needs no second click.
+  const chooseLevel = (level: string): DegreeChoice => {
+    const programs = programsForLevel(level);
+    return { degreeLevel: level, degreeProgramId: programs.length === 1 ? programs[0].id : "" };
+  };
+
+  const renderDegreeFields = (choice: DegreeChoice, onChange: (choice: DegreeChoice) => void, required: boolean) => {
+    const programs = choice.degreeLevel ? programsForLevel(choice.degreeLevel) : [];
+    const subject = (profile?.departmentId ? departmentName(profile.departmentId) : "your department").replace(/^department of /i, "");
+    return (
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block text-sm font-medium text-slate-700">
+          Degree level
+          <select
+            required={required}
+            value={choice.degreeLevel}
+            onChange={(event) => onChange(chooseLevel(event.target.value))}
+            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+          >
+            {!required && <option value="">Not set</option>}
+            {DEGREE_LEVELS.map((level) => (
+              <option key={level.value} value={level.value}>{level.label}</option>
+            ))}
+          </select>
+        </label>
+        {choice.degreeLevel && (
+          programs.length > 0 ? (
+            <label className="block text-sm font-medium text-slate-700">
+              Degree program
+              <select
+                required={required}
+                value={choice.degreeProgramId}
+                onChange={(event) => onChange({ ...choice, degreeProgramId: event.target.value })}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+              >
+                <option value="">Select program</option>
+                {programs.map((program) => (
+                  <option key={program.id} value={program.id}>{program.name}</option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div className="text-sm font-medium text-slate-700">
+              Degree program
+              <p className="mt-1 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 font-normal text-slate-600">
+                {degreeLevelLabel(choice.degreeLevel)} in {subject}
+                <span className="block text-xs text-slate-500">Your department has no {degreeLevelLabel(choice.degreeLevel)} program yet, so it will be created.</span>
+              </p>
+            </div>
+          )
+        )}
+      </div>
+    );
+  };
+
   const updateForm = (field: keyof CreateUserForm, value: string) => {
     setForm((currentForm) => ({ ...currentForm, [field]: value }));
   };
@@ -246,7 +421,8 @@ function AdminDashboard() {
 
   const openEditUser = (user: User) => {
     setEditingUser(user);
-    setEditForm({ name: user.name, email: user.email, password: "" });
+    const currentProgram = degreePrograms.find((program) => program.id === user.degreeProgramId);
+    setEditForm({ name: user.name, email: user.email, password: "", degreeLevel: currentProgram?.level.toLowerCase() ?? "", degreeProgramId: user.degreeProgramId ?? "" });
     setIsEditPasswordVisible(false);
     setUpdateUserError(null);
   };
@@ -274,11 +450,33 @@ function AdminDashboard() {
           password: form.password,
           // GraphQL userRole enum values are uppercase even though the form uses lowercase values.
           role: form.role.toUpperCase(),
-          departmentId: form.departmentId,
+          // Department admins don't pick a department (the backend derives it from their own
+          // account), so send null rather than "" — the UUID scalar rejects an empty string.
+          departmentId: form.departmentId || null,
+          degreeProgramId: form.role === "student" ? form.degreeProgramId || null : null,
+          // With no program chosen, the backend uses (or creates) the department's program at this level.
+          degreeLevel: form.role === "student" ? form.degreeLevel || null : null,
         },
       });
-      setUsers((currentUsers) => [result.createUser, ...currentUsers]);
-      setForm({ name: "", email: "", password: "", role: "student", departmentId: "" });
+      const createdLevel = form.role === "student" ? form.degreeLevel : null;
+      setUsers((currentUsers) => [{ ...result.createUser, degreeLevel: createdLevel }, ...currentUsers]);
+      // Show the group the new user landed in; otherwise a Master's or PhD student is created
+      // behind the Bachelor's tab and it looks as if nothing happened.
+      if (role === "admin") {
+        setDirectoryView("accounts");
+        if (form.role === "student") {
+          setRoleGroup("students");
+          setStudentLevel((createdLevel as StudentLevel) || "bachelors");
+        } else {
+          setRoleGroup(form.role === "professor" ? "professors" : "others");
+        }
+      }
+      setNotice(
+        `${result.createUser.name} was created${createdLevel ? ` as a ${degreeLevelLabel(createdLevel)} student` : form.role === "professor" ? " as a professor" : ""}.`,
+      );
+      setForm({ name: "", email: "", password: "", role: "student", departmentId: "", degreeLevel: "bachelors", degreeProgramId: "" });
+      await reloadDegreePrograms();
+      await reloadDirectory();
       closeCreateUser();
     } catch (requestError) {
       setCreateUserError(
@@ -303,13 +501,17 @@ function AdminDashboard() {
           name: editForm.name,
           email: editForm.email,
           password: editForm.password,
+          degreeProgramId: editingUser.role === "student" ? editForm.degreeProgramId || null : null,
+          degreeLevel: editingUser.role === "student" ? editForm.degreeLevel || null : null,
         },
       });
+      await reloadDegreePrograms();
       setUsers((currentUsers) =>
         currentUsers.map((user) =>
-          user.id === result.updateUser.id ? result.updateUser : user,
+          user.id === result.updateUser.id ? { ...user, ...result.updateUser } : user,
         ),
       );
+      await reloadDirectory();
       closeEditUser();
     } catch (requestError) {
       setUpdateUserError(
@@ -335,6 +537,11 @@ function AdminDashboard() {
         onUsers={() => setActiveView("users")}
         onDepartments={() => setActiveView("management")}
         activeView={activeView}
+        avatarUrl={resolveAvatarUrl(profile?.avatarUrl)}
+        userName={profile?.name}
+        onUploadAvatar={(file) => void handleUploadAvatar(file)}
+        isUploadingAvatar={isUploadingAvatar}
+        avatarError={avatarError}
       />
       <div className="m-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50">
         <div className="flex min-h-20 items-center justify-between border-b border-slate-200 px-6 py-5">
@@ -365,7 +572,16 @@ function AdminDashboard() {
             <section className="p-6">
               <div className="max-w-2xl rounded-2xl border border-slate-200 bg-slate-50 p-6">
                 <p className="text-xs font-medium uppercase tracking-[0.2em] text-blue-600">Account profile</p>
-                <h2 className="mt-2 text-2xl font-semibold text-slate-900">{profile?.name ?? "Administrator"}</h2>
+                <div className="mt-3 flex items-center gap-4">
+                  <div className="flex size-16 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-200 text-xl font-semibold uppercase text-slate-600">
+                    {profile?.avatarUrl ? (
+                      <img src={resolveAvatarUrl(profile.avatarUrl) ?? undefined} alt="Profile" className="size-full object-cover" />
+                    ) : (
+                      (profile?.name.trim()?.[0] ?? "?")
+                    )}
+                  </div>
+                  <h2 className="text-2xl font-semibold text-slate-900">{profile?.name ?? "Administrator"}</h2>
+                </div>
                 {profile ? (
                   <dl className="mt-6 grid gap-4 sm:grid-cols-2">
                     <div><dt className="text-xs uppercase tracking-wide text-slate-400">Email</dt><dd className="mt-1 text-sm text-slate-700">{profile.email}</dd></div>
@@ -382,7 +598,9 @@ function AdminDashboard() {
           <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
             <div>
               <h2 className="text-lg font-medium text-slate-800">Users</h2>
-              <p className="text-sm text-slate-500">Manage registered users</p>
+              <p className="text-sm text-slate-500">
+                {role === "admin" ? "Manage the accounts and profiles of your department's professors and students" : "Manage registered users"}
+              </p>
             </div>
             <div className="flex items-center gap-4">
               {role === "admin" && (
@@ -402,6 +620,8 @@ function AdminDashboard() {
                       return;
                     }
                     setCreateUserError(null);
+                    setNotice(null);
+                    setForm((currentForm) => ({ ...currentForm, ...chooseLevel(currentForm.degreeLevel || "bachelors") }));
                     setIsCreateUserOpen(true);
                   }}
                 />
@@ -413,6 +633,79 @@ function AdminDashboard() {
               <p className="rounded-lg bg-red-50 p-4 text-sm text-red-700">
                 {error}
               </p>
+            ) : role === "admin" ? (
+              <div className="space-y-4">
+                {notice && (
+                  <p className="flex items-center justify-between gap-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
+                    {notice}
+                    <button type="button" aria-label="Dismiss" onClick={() => setNotice(null)} className="text-emerald-700 hover:text-emerald-900">
+                      <X size={16} aria-hidden="true" />
+                    </button>
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1" role="tablist" aria-label="People">
+                    {roleTabs.map((tab) => (
+                      <button
+                        key={tab.value}
+                        type="button"
+                        role="tab"
+                        aria-selected={roleGroup === tab.value}
+                        onClick={() => setRoleGroup(tab.value)}
+                        className={`rounded-lg px-3 py-1.5 text-sm font-medium ${roleGroup === tab.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
+                      >
+                        {tab.label} <span className="ml-1 text-xs text-slate-400">{tab.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="inline-flex gap-1 rounded-xl border border-slate-200 p-1" role="tablist" aria-label="Accounts or profiles">
+                    {(["accounts", "profiles"] as const).map((view) => (
+                      <button
+                        key={view}
+                        type="button"
+                        role="tab"
+                        aria-selected={directoryView === view}
+                        onClick={() => setDirectoryView(view)}
+                        className={`rounded-lg px-3 py-1.5 text-sm font-medium capitalize ${directoryView === view ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                      >
+                        {view}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {roleGroup === "students" && (
+                  <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3" role="tablist" aria-label="Degree level">
+                    {levelTabs.map((tab) => (
+                      <button
+                        key={tab.value}
+                        type="button"
+                        role="tab"
+                        aria-selected={studentLevel === tab.value}
+                        onClick={() => setStudentLevel(tab.value)}
+                        className={`rounded-lg px-3 py-1.5 text-sm font-medium ${studentLevel === tab.value ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200" : "text-slate-600 hover:bg-slate-100"}`}
+                      >
+                        {tab.label} <span className="ml-1 text-xs opacity-70">{tab.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {directoryView === "accounts" ? (
+                  <div className="overflow-x-auto">{renderUserTable(groupUsers, true)}</div>
+                ) : roleGroup === "others" ? (
+                  <p className="rounded-lg bg-slate-50 p-8 text-center text-sm text-slate-500">Only professors and students have profiles.</p>
+                ) : (
+                  <ProfileManagement
+                    key={`${roleGroup}-${studentLevel}`}
+                    profileType={roleGroup === "professors" ? "professor" : "student"}
+                    users={groupUsers}
+                    profiles={profiles}
+                    degreePrograms={degreePrograms}
+                    professors={professorUsers}
+                    degreeLevel={roleGroup === "students" && studentLevel !== "unset" ? studentLevel : null}
+                    onSaved={reloadDirectory}
+                  />
+                )}
+              </div>
             ) : visibleUsers.length === 0 ? (
               <p className="rounded-lg bg-slate-50 p-8 text-center text-slate-500">No users found.</p>
             ) : (
@@ -544,6 +837,14 @@ function AdminDashboard() {
                   </div>
                 )}
               </div>
+              {form.role === "student" && (
+                <div>
+                  {renderDegreeFields(form, (choice) => setForm((currentForm) => ({ ...currentForm, ...choice })), true)}
+                  <span className="mt-1 block text-xs font-normal text-slate-500">
+                    The student's profile is created automatically once they submit a proposal.
+                  </span>
+                </div>
+              )}
               {createUserError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{createUserError}</p>}
               <div className="flex justify-end gap-3 pt-2">
                 <button
@@ -623,6 +924,7 @@ function AdminDashboard() {
                   </button>
                 </span>
               </label>
+              {editingUser?.role === "student" && renderDegreeFields(editForm, (choice) => setEditForm((currentForm) => ({ ...currentForm, ...choice })), false)}
               {updateUserError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{updateUserError}</p>}
               <div className="flex justify-end gap-3 pt-2">
                 <button
