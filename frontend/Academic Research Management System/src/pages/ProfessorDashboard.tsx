@@ -1,26 +1,52 @@
 import { useEffect, useState } from "react";
-import { Download, Eye, FileText, Menu, X } from "lucide-react";
+import {
+  CalendarDays,
+  ClipboardCheck,
+  FileText,
+  Gavel,
+  GraduationCap,
+  NotebookPen,
+  Users,
+} from "lucide-react";
 import { gql } from "@apollo/client";
 import { print } from "graphql";
-import { useNavigate } from "react-router-dom";
-import NavigationBar from "../components/NavigationBar";
-import NotificationBell from "../components/NotificationBell";
+import AppShell, { type NavItem } from "../components/AppShell";
 import DefenseNotice from "../components/DefenseNotice";
 import DefenseCard, { type DefenseDetails } from "../components/DefenseCard";
+import {
+  Card,
+  DocumentActions,
+  EmptyState,
+  FormError,
+  Modal,
+  ProfileCard,
+  SectionHeader,
+  SegmentedControl,
+  StatusBadge,
+} from "../components/ui";
+import { useSection } from "../hooks/useSection";
+import { useToast } from "../hooks/useToast";
 import {
   DEFENSE_TONE_LABELS,
   DEFENSE_TONE_STYLES,
   defenseTone,
+  formatDefenseDate,
+  reportLabel,
 } from "../utils/defenses";
 import { MY_PANEL_DEFENSES_QUERY } from "../queries/queries";
 import { SUBMIT_DEFENSE_VERDICT } from "../mutations/mutations";
 import { resolveAvatarUrl, uploadAvatarImage } from "../utils/uploadAvatar";
 import {
-  downloadDocumentFile,
-  downloadProposalFile,
-  viewDocumentFile,
-  viewProposalFile,
-} from "../utils/proposalFile";
+  degreeLevelLabel,
+  errorMessage,
+  formatDate,
+  formatDateTime,
+  formatStatus,
+  inputClass,
+  primaryButtonClass,
+  secondaryButtonClass,
+  smallPrimaryButtonClass,
+} from "../utils/format";
 
 interface CurrentUser {
   name: string;
@@ -56,6 +82,8 @@ interface Proposal {
 
 interface Paper {
   id: string;
+  proposalId: string | null;
+  degreeLevel: string | null;
   title: string;
   status: string;
   finalReportStatus: string | null;
@@ -100,13 +128,23 @@ interface GraphQLResult<T> {
 }
 
 type Decision = "approved" | "rejected" | "changes_requested";
-type ResearchTab = "proposals" | "progress" | "final" | "panels";
 type PanelLevel = "bachelors" | "masters" | "phd";
-const PANEL_LEVELS: { value: PanelLevel; label: string }[] = [
-  { value: "bachelors", label: "Bachelor's defense" },
-  { value: "masters", label: "Master's defense" },
-  { value: "phd", label: "PhD defense" },
+type LevelFilter = PanelLevel | "all";
+const LEVEL_FILTERS: { value: LevelFilter; label: string }[] = [
+  { value: "all", label: "All levels" },
+  { value: "bachelors", label: "Bachelor's" },
+  { value: "masters", label: "Master's" },
+  { value: "phd", label: "PhD" },
 ];
+const SECTIONS = ["todo", "students", "panels", "profile"] as const;
+type Section = (typeof SECTIONS)[number];
+const SECTION_TITLES: Record<Section, string> = {
+  todo: "To-do",
+  students: "My students",
+  panels: "Defense panels",
+  profile: "My profile",
+};
+const DECISIONS: Decision[] = ["approved", "changes_requested", "rejected"];
 
 const ENDPOINT = import.meta.env.VITE_API_URL
 const CURRENT_USER = gql`
@@ -167,6 +205,8 @@ const SUPERVISED_PAPERS = gql`
   query SupervisedPapers {
     supervisedPapers {
       id
+      proposalId
+      degreeLevel
       title
       status
       finalReportStatus
@@ -231,17 +271,6 @@ const REVIEW_FINAL_REPORT = gql`
   }
 `;
 
-const statusStyles: Record<string, string> = {
-  approved: "bg-emerald-50 text-emerald-700",
-  accepted: "bg-emerald-50 text-emerald-700",
-  submitted: "bg-blue-50 text-blue-700",
-  rejected: "bg-red-50 text-red-700",
-  changes_requested: "bg-amber-50 text-amber-700",
-  assigned: "bg-slate-100 text-slate-600",
-};
-
-const formatStatus = (status: string) => status.replace(/_/g, " ");
-
 async function request<T>(
   query: ReturnType<typeof gql>,
   variables?: Record<string, unknown>,
@@ -261,10 +290,52 @@ async function request<T>(
   return result.data;
 }
 
+// One piece of research the professor supervises: the proposal, and once it is
+// approved, the paper it became with its reports and defenses.
+interface Research {
+  key: string;
+  proposal: Proposal | null;
+  paper: Paper | null;
+  level: string | null;
+}
+
+function DecisionPicker({
+  value,
+  onChange,
+}: {
+  value: Decision;
+  onChange: (decision: Decision) => void;
+}) {
+  return (
+    <div className="grid gap-1.5 text-sm font-medium text-slate-700">
+      Decision
+      <div className="flex flex-wrap gap-2">
+        {DECISIONS.map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={value === option}
+            onClick={() => onChange(option)}
+            className={`rounded-lg border px-3 py-2 text-sm font-medium capitalize ${
+              value === option
+                ? "border-blue-500 bg-blue-600 text-white"
+                : "border-slate-300 text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            {formatStatus(option)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfessorDashboard() {
-  const navigate = useNavigate();
+  const toast = useToast();
+  const [section, goTo] = useSection(SECTIONS, "todo");
   const [proposals, setProposals] = useState<Proposal[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
   const [reviewing, setReviewing] = useState<Proposal | null>(null);
   const [decision, setDecision] = useState<Decision>("approved");
   const [comment, setComment] = useState("");
@@ -272,14 +343,9 @@ function ProfessorDashboard() {
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [profile, setProfile] = useState<MyProfile | null>(null);
-  const [isNavigationOpen, setIsNavigationOpen] = useState(false);
-  const [activeView, setActiveView] = useState<"proposals" | "profile">(
-    "proposals",
-  );
-  const [researchTab, setResearchTab] = useState<ResearchTab>("proposals");
-  const [proposalLevel, setProposalLevel] = useState<PanelLevel>("bachelors");
+  const [studentLevel, setStudentLevel] = useState<LevelFilter>("all");
+  const [panelLevel, setPanelLevel] = useState<LevelFilter>("all");
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [progressReports, setProgressReports] = useState<ProgressReport[]>([]);
   const [defenses, setDefenses] = useState<Defense[]>([]);
@@ -293,10 +359,8 @@ function ProfessorDashboard() {
   });
   const [isSavingVerdict, setIsSavingVerdict] = useState(false);
   const [verdictError, setVerdictError] = useState<string | null>(null);
-  // Confirmation after a vote, shown above the panel list.
-  const [notice, setNotice] = useState<string | null>(null);
-  const [panelLevel, setPanelLevel] = useState<PanelLevel>("bachelors");
   const [paperError, setPaperError] = useState<string | null>(null);
+  const [isSubmittingPaperReview, setIsSubmittingPaperReview] = useState(false);
   const [reviewingReport, setReviewingReport] = useState<ProgressReport | null>(
     null,
   );
@@ -304,6 +368,8 @@ function ProfessorDashboard() {
     useState<Paper | null>(null);
   const [paperDecision, setPaperDecision] = useState<Decision>("approved");
   const [paperComment, setPaperComment] = useState("");
+
+  const showError = (message: string) => toast.error(message);
 
   const submitVerdict = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -322,7 +388,7 @@ function ProfessorDashboard() {
       });
       // Still pending means other members have yet to vote.
       const status = result.submitDefenseVerdict.currentStatus;
-      setNotice(
+      toast.success(
         status === "pending"
           ? "Your verdict is recorded. The outcome is decided once every panel member has voted."
           : status === "accepted"
@@ -330,13 +396,9 @@ function ProfessorDashboard() {
             : "The panel did not pass this defense. Everyone involved has been notified.",
       );
       setVerdictTarget(null);
-      await load();
+      await loadPapers();
     } catch (requestError) {
-      setVerdictError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to submit your verdict.",
-      );
+      setVerdictError(errorMessage(requestError, "Unable to submit your verdict."));
     } finally {
       setIsSavingVerdict(false);
     }
@@ -348,12 +410,9 @@ function ProfessorDashboard() {
         ASSIGNED_PROPOSALS,
       );
       setProposals(result.assignedProposals);
+      setLoadError(null);
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to load assigned proposals.",
-      );
+      setLoadError(errorMessage(requestError, "Unable to load assigned proposals."));
     }
   };
 
@@ -375,18 +434,16 @@ function ProfessorDashboard() {
       setDefenses(defensesResult.supervisedDefenses);
       setPanelDefenses(panelResult.myPanelDefenses);
     } catch (requestError) {
-      setPaperError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to load supervised papers.",
-      );
+      setLoadError(errorMessage(requestError, "Unable to load supervised papers."));
     }
   };
 
+  const reloadAll = async () => {
+    await Promise.all([load(), loadPapers()]);
+  };
+
   useEffect(() => {
-    const initialize = async () => {
-      await load();
-      await loadPapers();
+    const loadAccount = async () => {
       try {
         const [userResult, profileResult] = await Promise.all([
           request<{ currentUser: CurrentUser }>(CURRENT_USER),
@@ -398,11 +455,15 @@ function ProfessorDashboard() {
         // Profile details are a nice-to-have here; a failed lookup shouldn't block the page.
       }
     };
+    const initialize = async () => {
+      await Promise.all([load(), loadPapers()]);
+      setIsLoaded(true);
+    };
+    void loadAccount();
     void initialize();
   }, []);
 
   const handleUploadAvatar = async (file: File) => {
-    setAvatarError(null);
     setIsUploadingAvatar(true);
     try {
       const avatarUrl = await uploadAvatarImage(file);
@@ -410,12 +471,9 @@ function ProfessorDashboard() {
         current ? { ...current, avatarUrl } : current,
       );
       setProfile((current) => (current ? { ...current, avatarUrl } : current));
+      toast.success("Profile photo updated.");
     } catch (uploadError) {
-      setAvatarError(
-        uploadError instanceof Error
-          ? uploadError.message
-          : "Unable to upload image.",
-      );
+      toast.error(errorMessage(uploadError, "Unable to upload image."));
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -453,13 +511,11 @@ function ProfessorDashboard() {
         },
       });
       closeReview();
-      await load();
+      toast.success(`Review saved: ${formatStatus(decision)}.`);
+      // Approving creates the paper, so both lists change.
+      await reloadAll();
     } catch (requestError) {
-      setReviewError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to submit review.",
-      );
+      setReviewError(errorMessage(requestError, "Unable to submit review."));
     } finally {
       setIsSubmittingReview(false);
     }
@@ -469,7 +525,6 @@ function ProfessorDashboard() {
   // "submitted" again — approving it here is the same reviewProposal call, just a
   // one-click shortcut instead of opening the full review form for the common case.
   const approveCorrection = async (proposal: Proposal) => {
-    setError(null);
     try {
       await request(REVIEW_PROPOSAL, {
         professorInput: {
@@ -478,13 +533,10 @@ function ProfessorDashboard() {
           comment: null,
         },
       });
-      await load();
+      toast.success(`"${proposal.title}" approved.`);
+      await reloadAll();
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to approve the proposal.",
-      );
+      toast.error(errorMessage(requestError, "Unable to approve the proposal."));
     }
   };
 
@@ -495,12 +547,19 @@ function ProfessorDashboard() {
     setPaperError(null);
   };
 
+  const closePaperReview = () => {
+    setReviewingReport(null);
+    setReviewingFinalReport(null);
+    setPaperError(null);
+  };
+
   const submitReportReview = async (
     event: React.FormEvent<HTMLFormElement>,
   ) => {
     event.preventDefault();
     if (!reviewingReport) return;
     setPaperError(null);
+    setIsSubmittingPaperReview(true);
     try {
       await request(REVIEW_PROGRESS_REPORT, {
         professorInput: {
@@ -510,13 +569,12 @@ function ProfessorDashboard() {
         },
       });
       setReviewingReport(null);
+      toast.success(`Progress report review saved: ${formatStatus(paperDecision)}.`);
       await loadPapers();
     } catch (requestError) {
-      setPaperError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to submit review.",
-      );
+      setPaperError(errorMessage(requestError, "Unable to submit review."));
+    } finally {
+      setIsSubmittingPaperReview(false);
     }
   };
 
@@ -533,6 +591,7 @@ function ProfessorDashboard() {
     event.preventDefault();
     if (!reviewingFinalReport) return;
     setPaperError(null);
+    setIsSubmittingPaperReview(true);
     try {
       await request(REVIEW_FINAL_REPORT, {
         professorInput: {
@@ -542,510 +601,556 @@ function ProfessorDashboard() {
         },
       });
       setReviewingFinalReport(null);
+      toast.success(`Final report review saved: ${formatStatus(paperDecision)}.`);
       await loadPapers();
     } catch (requestError) {
-      setPaperError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to submit review.",
-      );
+      setPaperError(errorMessage(requestError, "Unable to submit review."));
+    } finally {
+      setIsSubmittingPaperReview(false);
     }
   };
 
-  const tabs: { value: ResearchTab; label: string; count: number }[] = [
-    {
-      value: "proposals",
-      label: "Proposals",
-      count: proposals.filter(
-        (proposal) =>
-          !proposal.deletedAt &&
-          ["submitted", "assigned"].includes(proposal.status),
+  const openVerdict = (defense: DefenseDetails) => {
+    setVerdictForm({ verdict: "accept", comments: "" });
+    setVerdictError(null);
+    setVerdictTarget(defense);
+  };
+
+  const studentNames = (proposal: Proposal | null) =>
+    proposal
+      ? [
+          proposal.submittedByName ?? "Unknown student",
+          ...proposal.groupMembers.map((member) => member.name),
+        ].join(", ")
+      : "Students not listed";
+
+  // Everything waiting on this professor, oldest decisions first within each kind.
+  const proposalsToReview = proposals.filter(
+    (proposal) =>
+      !proposal.deletedAt && ["submitted", "assigned"].includes(proposal.status),
+  );
+  const reportsToReview = progressReports.filter(
+    (report) => report.status === "submitted",
+  );
+  const finalsToReview = papers.filter(
+    (paper) => paper.finalReportStatus === "submitted",
+  );
+  const verdictsDue = panelDefenses.filter(
+    (defense) => defense.hasEnded && defense.currentStatus === "pending",
+  );
+  const upcomingPanels = panelDefenses
+    .filter((defense) => !defense.hasEnded && defense.currentStatus === "pending")
+    .sort(
+      (first, second) =>
+        new Date(first.defenseDate).getTime() -
+        new Date(second.defenseDate).getTime(),
+    );
+  const todoCount =
+    proposalsToReview.length +
+    reportsToReview.length +
+    finalsToReview.length +
+    verdictsDue.length;
+
+  const paperTitle = (paperId: string) =>
+    papers.find((paper) => paper.id === paperId)?.title ?? "Research paper";
+  const paperLevel = (paperId: string) =>
+    papers.find((paper) => paper.id === paperId)?.degreeLevel ?? null;
+
+  // Each paper next to the proposal it came from, then proposals not yet approved.
+  const research: Research[] = [
+    ...papers.map((paper) => {
+      const proposal =
+        proposals.find((item) => item.id === paper.proposalId) ?? null;
+      return {
+        key: paper.id,
+        proposal,
+        paper,
+        level: paper.degreeLevel ?? proposal?.degreeLevel ?? null,
+      };
+    }),
+    ...proposals
+      .filter(
+        (proposal) => !papers.some((paper) => paper.proposalId === proposal.id),
+      )
+      .map((proposal) => ({
+        key: proposal.id,
+        proposal,
+        paper: null,
+        level: proposal.degreeLevel,
+      })),
+  ];
+  const needsMe = (item: Research) =>
+    (item.proposal !== null && proposalsToReview.includes(item.proposal)) ||
+    (item.paper !== null &&
+      (item.paper.finalReportStatus === "submitted" ||
+        reportsToReview.some((report) => report.paperId === item.paper!.id)));
+  const visibleResearch = research
+    .filter((item) => studentLevel === "all" || item.level === studentLevel)
+    // Work waiting on the professor first, deleted proposals last.
+    .sort(
+      (first, second) =>
+        Number(needsMe(second)) - Number(needsMe(first)) ||
+        Number(Boolean(first.proposal?.deletedAt)) -
+          Number(Boolean(second.proposal?.deletedAt)),
+    );
+  const visiblePanels = panelDefenses
+    .filter((defense) => panelLevel === "all" || defense.degreeLevel === panelLevel)
+    .sort(
+      (first, second) =>
+        Number(first.hasEnded && first.currentStatus !== "pending") -
+          Number(second.hasEnded && second.currentStatus !== "pending") ||
+        new Date(first.defenseDate).getTime() -
+          new Date(second.defenseDate).getTime(),
+    );
+  const countAtLevel = <T,>(items: T[], levelOf: (item: T) => string | null) =>
+    LEVEL_FILTERS.map((filter) => ({
+      ...filter,
+      count: items.filter(
+        (item) => filter.value === "all" || levelOf(item) === filter.value,
       ).length,
-    },
+    }));
+
+  const nav: NavItem[] = [
+    { key: "todo", label: "To-do", icon: ClipboardCheck, badge: todoCount },
+    { key: "students", label: "My students", icon: Users },
     {
-      value: "progress",
-      label: "Progress reports",
-      count: progressReports.filter((report) => report.status === "submitted")
-        .length,
-    },
-    {
-      value: "final",
-      label: "Final submissions",
-      count: papers.filter((paper) => paper.finalReportStatus === "submitted")
-        .length,
-    },
-    {
-      value: "panels",
+      key: "panels",
       label: "Defense panels",
-      count: panelDefenses.filter(
-        (defense) => !defense.hasEnded && defense.currentStatus === "pending",
-      ).length,
+      icon: Gavel,
+      badge: verdictsDue.length,
     },
   ];
-  const proposalsAtLevel = (level: PanelLevel) =>
-    proposals.filter((proposal) => proposal.degreeLevel === level);
-  const panelDefensesAtLevel = (level: PanelLevel) =>
-    panelDefenses.filter((defense) => defense.degreeLevel === level);
+
+  const todoRow = ({
+    key,
+    kind,
+    icon: Icon,
+    title,
+    detail,
+    level,
+    actions,
+  }: {
+    key: string;
+    kind: string;
+    icon: typeof FileText;
+    title: string;
+    detail: React.ReactNode;
+    level: string | null;
+    actions: React.ReactNode;
+  }) => (
+    <li
+      key={key}
+      className="flex flex-wrap items-center justify-between gap-3 p-4"
+    >
+      <div className="flex min-w-0 items-start gap-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+          <Icon size={18} aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
+            {kind}
+            {level ? (
+              <span className="ml-2 font-medium normal-case tracking-normal text-slate-400">
+                {degreeLevelLabel(level)}
+              </span>
+            ) : null}
+          </p>
+          <p className="font-medium text-slate-900">{title}</p>
+          <div className="text-xs text-slate-500">{detail}</div>
+        </div>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
+    </li>
+  );
+
+  const reviewButton = (label: string, onClick: () => void) => (
+    <button type="button" onClick={onClick} className={smallPrimaryButtonClass}>
+      {label}
+    </button>
+  );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans">
-      <NavigationBar
-        open={isNavigationOpen}
-        onClose={() => setIsNavigationOpen(false)}
-        role="professor"
-        onProfile={() => setActiveView("profile")}
-        onResearchSpace={() => setActiveView("proposals")}
-        onLogout={() => {
-          localStorage.clear();
-          navigate("/login");
+    <>
+      <AppShell
+        roleLabel="Professor workspace"
+        nav={nav}
+        active={section}
+        title={SECTION_TITLES[section]}
+        user={{
+          name: currentUser?.name,
+          email: profile?.email,
+          avatarUrl: resolveAvatarUrl(currentUser?.avatarUrl),
         }}
-        activeView={activeView}
-        avatarUrl={resolveAvatarUrl(currentUser?.avatarUrl)}
-        userName={currentUser?.name}
         onUploadAvatar={(file) => void handleUploadAvatar(file)}
         isUploadingAvatar={isUploadingAvatar}
-        avatarError={avatarError}
-      />
-      <div className="m-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50">
-        <header className="flex min-h-20 items-center justify-between border-b border-slate-200 px-6 py-5">
-          <div className="flex items-center gap-3">
+      >
+        {loadError && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+            {loadError}
             <button
               type="button"
-              aria-label="Open navigation menu"
-              aria-expanded={isNavigationOpen}
-              onClick={() => setIsNavigationOpen(true)}
-              className="flex size-10 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 md:hidden"
+              onClick={() => void reloadAll()}
+              className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium hover:bg-red-100"
             >
-              <Menu size={20} aria-hidden="true" />
+              Try again
             </button>
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-blue-600">
-                Professor workspace
-              </p>
-              <h1 className="mt-1 font-serif text-2xl text-slate-900">
-                {activeView === "profile" ? "My profile" : "Research space"}
-              </h1>
-            </div>
           </div>
-          <NotificationBell />
-        </header>
-        <div className="min-h-0 w-full flex-1 overflow-auto">
-          {activeView === "profile" ? (
-            <section className="p-6">
-              <div className="max-w-2xl rounded-2xl border border-slate-200 bg-slate-50 p-6">
-                <p className="text-xs font-medium uppercase tracking-[0.2em] text-blue-600">
-                  Account profile
-                </p>
-                <div className="mt-3 flex items-center gap-4">
-                  <div className="flex size-16 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-200 text-xl font-semibold uppercase text-slate-600">
-                    {profile?.avatarUrl ? (
-                      <img
-                        src={resolveAvatarUrl(profile.avatarUrl) ?? undefined}
-                        alt="Profile"
-                        className="size-full object-cover"
-                      />
-                    ) : (
-                      (profile?.name.trim()?.[0] ?? "?")
+        )}
+
+        {section === "profile" && (
+          <ProfileCard
+            name={profile?.name ?? currentUser?.name ?? "Professor"}
+            avatarUrl={resolveAvatarUrl(profile?.avatarUrl)}
+            fields={[
+              { label: "Email", value: profile?.email ?? "—" },
+              { label: "Department", value: profile?.departmentName ?? "Not assigned" },
+              { label: "Academic rank", value: profile?.academicRank ?? "Not available" },
+              { label: "Max students", value: profile?.maxStudents ?? "Not available" },
+            ]}
+          />
+        )}
+
+        {section === "todo" &&
+          (!isLoaded ? (
+            <p className="text-sm text-slate-500">Loading your work...</p>
+          ) : (
+            <div className="space-y-6">
+              <SectionHeader
+                title={
+                  todoCount === 0
+                    ? "You're all caught up"
+                    : `${todoCount} item${todoCount === 1 ? "" : "s"} waiting for you`
+                }
+                description="Proposals and reports your students have submitted, and defenses where your panel's verdict is due."
+              />
+              {todoCount === 0 ? (
+                <EmptyState title="Nothing needs your review right now">
+                  New submissions and defenses that need your verdict will
+                  appear here.
+                </EmptyState>
+              ) : (
+                <Card className="!p-0">
+                  <ul className="divide-y divide-slate-100">
+                    {verdictsDue.map((defense) =>
+                      todoRow({
+                        key: `verdict-${defense.id}`,
+                        kind: "Verdict due",
+                        icon: Gavel,
+                        title: defense.paperTitle ?? "Untitled research",
+                        level: defense.degreeLevel,
+                        detail: (
+                          <>
+                            {reportLabel(defense.kind)} defense
+                            {defense.phaseLabel ? ` · ${defense.phaseLabel}` : ""}{" "}
+                            · held {formatDefenseDate(defense.defenseDate)} ·{" "}
+                            {defense.studentNames.join(", ") || "—"}
+                          </>
+                        ),
+                        actions: reviewButton("Give or change verdict", () =>
+                          openVerdict(defense),
+                        ),
+                      }),
                     )}
-                  </div>
-                  <h2 className="text-2xl font-semibold text-slate-900">
-                    {profile?.name ?? "Professor"}
-                  </h2>
-                </div>
-                {profile ? (
-                  <dl className="mt-6 grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Email
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.email}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Department
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.departmentName ?? "Not assigned"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Academic rank
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.academicRank ?? "Not available"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Max students
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.maxStudents ?? "Not available"}
-                      </dd>
-                    </div>
-                  </dl>
-                ) : (
-                  <p className="mt-4 text-sm text-slate-500">
-                    Profile details are unavailable.
+                    {proposalsToReview.map((proposal) =>
+                      todoRow({
+                        key: `proposal-${proposal.id}`,
+                        kind: proposal.studentResponse
+                          ? "Revised proposal"
+                          : "Proposal",
+                        icon: NotebookPen,
+                        title: proposal.title,
+                        level: proposal.degreeLevel,
+                        detail: (
+                          <>
+                            {studentNames(proposal)}
+                            {proposal.studentResponse && (
+                              <span className="mt-0.5 block text-blue-700">
+                                {proposal.respondedByName
+                                  ? `${proposal.respondedByName} replied: `
+                                  : "Reply: "}
+                                "{proposal.studentResponse}"
+                              </span>
+                            )}
+                            <span className="mt-1 block">
+                              <DocumentActions
+                                kind="proposals"
+                                entityId={proposal.id}
+                                filename={proposal.originalFilename}
+                                fallbackName="proposal.pdf"
+                                onError={showError}
+                                showName={false}
+                              />
+                            </span>
+                          </>
+                        ),
+                        actions: (
+                          <>
+                            {proposal.studentResponse && (
+                              <button
+                                type="button"
+                                onClick={() => void approveCorrection(proposal)}
+                                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                              >
+                                Approve
+                              </button>
+                            )}
+                            {reviewButton("Review", () => openReview(proposal))}
+                          </>
+                        ),
+                      }),
+                    )}
+                    {reportsToReview.map((report) =>
+                      todoRow({
+                        key: `report-${report.id}`,
+                        kind: report.phaseLabel ?? "Progress report",
+                        icon: FileText,
+                        title: paperTitle(report.paperId),
+                        level: paperLevel(report.paperId),
+                        detail: (
+                          <>
+                            By {report.submittedByName ?? "student"} ·{" "}
+                            {formatDate(report.submittedAt)}
+                            <span className="mt-1 block">
+                              <DocumentActions
+                                kind="progress-reports"
+                                entityId={report.id}
+                                filename={report.originalFilename}
+                                fallbackName="progress-report.pdf"
+                                onError={showError}
+                                showName={false}
+                              />
+                            </span>
+                          </>
+                        ),
+                        actions: reviewButton("Review", () =>
+                          openReportReview(report),
+                        ),
+                      }),
+                    )}
+                    {finalsToReview.map((paper) =>
+                      todoRow({
+                        key: `final-${paper.id}`,
+                        kind: "Final report",
+                        icon: GraduationCap,
+                        title: paper.title,
+                        level: paper.degreeLevel,
+                        detail: (
+                          <span className="mt-1 block">
+                            <DocumentActions
+                              kind="papers"
+                              entityId={paper.id}
+                              filename={paper.finalReportOriginalFilename}
+                              fallbackName="final-report.pdf"
+                              onError={showError}
+                              showName={false}
+                            />
+                          </span>
+                        ),
+                        actions: reviewButton("Review", () =>
+                          openFinalReportReview(paper),
+                        ),
+                      }),
+                    )}
+                  </ul>
+                </Card>
+              )}
+
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Coming up on your panels
+                </h3>
+                {upcomingPanels.length === 0 ? (
+                  <p className="mt-1 text-sm text-slate-500">
+                    No upcoming defenses.
                   </p>
+                ) : (
+                  <ul className="mt-2 space-y-2">
+                    {upcomingPanels.slice(0, 5).map((defense) => (
+                      <li
+                        key={defense.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm"
+                      >
+                        <span className="min-w-0">
+                          <span className="block font-medium text-slate-800">
+                            {defense.paperTitle ?? "Untitled research"}
+                          </span>
+                          <span className="block text-xs text-slate-500">
+                            {reportLabel(defense.kind)} defense ·{" "}
+                            {defense.studentNames.join(", ") || "—"}
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                          <CalendarDays size={14} aria-hidden="true" />
+                          {formatDefenseDate(defense.defenseDate)}
+                          {defense.scheduledTime
+                            ? ` · ${defense.scheduledTime.slice(0, 5)}`
+                            : ""}
+                          {defense.location ? ` · ${defense.location}` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {upcomingPanels.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => goTo("panels")}
+                    className="mt-2 text-sm font-medium text-blue-700 hover:underline"
+                  >
+                    See all your panels
+                  </button>
                 )}
               </div>
-            </section>
-          ) : (
-            <section className="p-6">
-              <div
-                className="flex flex-wrap gap-2 border-b border-slate-200 pb-4"
-                role="tablist"
-                aria-label="Research stages"
-              >
-                {tabs.map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    role="tab"
-                    aria-selected={researchTab === item.value}
-                    onClick={() => setResearchTab(item.value)}
-                    className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium ${researchTab === item.value ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+            </div>
+          ))}
+
+        {section === "students" && (
+          <div className="space-y-4">
+            <SectionHeader
+              title="Research you supervise"
+              description="One card per proposal or paper, with every submission and defense in order. Bachelor's research is group work; Master's and PhD research is individual."
+            />
+            <SegmentedControl
+              label="Degree level"
+              options={countAtLevel(research, (item) => item.level)}
+              value={studentLevel}
+              onChange={setStudentLevel}
+            />
+            {visibleResearch.length === 0 ? (
+              <EmptyState title="No research here yet">
+                Your department administrator assigns proposals to you. Once
+                you approve one it becomes a paper you supervise.
+              </EmptyState>
+            ) : (
+              visibleResearch.map((item) => {
+                const { proposal, paper } = item;
+                const reports = paper
+                  ? progressReports.filter((report) => report.paperId === paper.id)
+                  : [];
+                const finalDefenses = paper
+                  ? defenses.filter((defense) => defense.paperId === paper.id)
+                  : [];
+                return (
+                  <article
+                    key={item.key}
+                    className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
                   >
-                    {item.label}
-                    {item.count > 0 && (
-                      <span
-                        className={`rounded-full px-1.5 text-xs ${researchTab === item.value ? "bg-white/25 text-white" : "bg-amber-100 text-amber-800"}`}
-                        title="Waiting for your review"
-                      >
-                        {item.count}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-              {error && (
-                <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                  {error}
-                </p>
-              )}
-              {paperError && !reviewingReport && !reviewingFinalReport && (
-                <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                  {paperError}
-                </p>
-              )}
-              {researchTab === "proposals" && (
-                <div>
-                  <p className="mt-4 text-sm text-slate-500">
-                    Proposals assigned to you by your department administrator.
-                    Bachelor's proposals are group work; Master's and PhD
-                    proposals are individual.
-                  </p>
-                  <div
-                    className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
-                    role="tablist"
-                    aria-label="Degree level"
-                  >
-                    {PANEL_LEVELS.map((level) => (
-                      <button
-                        key={level.value}
-                        type="button"
-                        role="tab"
-                        aria-selected={proposalLevel === level.value}
-                        onClick={() => setProposalLevel(level.value)}
-                        className={`rounded-lg px-3 py-1.5 text-sm font-medium ${proposalLevel === level.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
-                      >
-                        {level.label.replace("defense", "proposals")}{" "}
-                        <span className="ml-1 text-xs text-slate-400">
-                          {proposalsAtLevel(level.value).length}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="mt-6 overflow-x-auto">
-                    <table className="w-full min-w-[900px] border-collapse text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                          <th className="px-4 py-3">Proposal</th>
-                          <th className="px-4 py-3">Students</th>
-                          <th className="px-4 py-3">Cluster</th>
-                          <th className="px-4 py-3">Status</th>
-                          <th className="px-4 py-3 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {proposalsAtLevel(proposalLevel).length === 0 ? (
-                          <tr>
-                            <td
-                              colSpan={5}
-                              className="px-4 py-8 text-center text-slate-500"
-                            >
-                              No{" "}
-                              {PANEL_LEVELS.find(
-                                (level) => level.value === proposalLevel,
-                              )?.label.replace(" defense", "")}{" "}
-                              proposals have been assigned to you.
-                            </td>
-                          </tr>
-                        ) : (
-                          proposalsAtLevel(proposalLevel).map((proposal) => (
-                            <tr
-                              key={proposal.id}
-                              className="border-b border-slate-100"
-                            >
-                              <td className="px-4 py-3 font-medium text-slate-800">
-                                {proposal.title}
-                              </td>
-                              <td className="px-4 py-3 text-slate-600">
-                                {[
-                                  proposal.submittedByName ?? "Unknown student",
-                                  ...proposal.groupMembers.map(
-                                    (member) => member.name,
-                                  ),
-                                ].join(", ")}
-                              </td>
-                              <td className="px-4 py-3 text-slate-600">
-                                {proposal.clusterName ?? "Not assigned"}
-                              </td>
-                              <td className="px-4 py-3">
-                                <span
-                                  className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusStyles[proposal.status] ?? "bg-slate-100 text-slate-600"}`}
-                                >
-                                  {formatStatus(proposal.status)}
-                                </span>
-                                {proposal.deletedAt && (
-                                  <span className="ml-1 inline-block rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600">
-                                    Deleted
-                                  </span>
-                                )}
-                                {proposal.reviewComment && (
-                                  <p className="mt-1 max-w-xs text-xs text-slate-500">
-                                    "{proposal.reviewComment}"
-                                  </p>
-                                )}
-                                {proposal.studentResponse && (
-                                  <p className="mt-1 max-w-xs text-xs text-blue-600">
-                                    {proposal.respondedByName
-                                      ? `${proposal.respondedByName} replied: `
-                                      : "Reply: "}
-                                    "{proposal.studentResponse}"
-                                  </p>
-                                )}
-                                {proposal.deletedAt && (
-                                  <p className="mt-1 max-w-xs text-xs text-slate-400">
-                                    Deleted by{" "}
-                                    {proposal.deletedByName ?? "an admin"} on{" "}
-                                    {new Date(
-                                      proposal.deletedAt,
-                                    ).toLocaleDateString()}
-                                  </p>
-                                )}
-                                {defenses
-                                  .filter(
-                                    (defense) =>
-                                      defense.proposalId === proposal.id,
-                                  )
-                                  .map((defense) => (
-                                    <div key={defense.id} className="max-w-xs">
-                                      <DefenseNotice defense={defense} />
-                                    </div>
-                                  ))}
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                {proposal.originalFilename && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      title="View proposal document"
-                                      onClick={() =>
-                                        void viewProposalFile(
-                                          proposal.id,
-                                        ).catch((viewError: unknown) =>
-                                          setError(
-                                            viewError instanceof Error
-                                              ? viewError.message
-                                              : "Unable to open the document.",
-                                          ),
-                                        )
-                                      }
-                                      className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-700"
-                                    >
-                                      <Eye size={16} />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      title="Download proposal document"
-                                      onClick={() =>
-                                        void downloadProposalFile(
-                                          proposal.id,
-                                          proposal.originalFilename ??
-                                            "proposal.pdf",
-                                        ).catch((downloadError: unknown) =>
-                                          setError(
-                                            downloadError instanceof Error
-                                              ? downloadError.message
-                                              : "Unable to download the document.",
-                                          ),
-                                        )
-                                      }
-                                      className="mr-2 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-700"
-                                    >
-                                      <Download size={16} />
-                                    </button>
-                                  </>
-                                )}
-                                {proposal.deletedAt ? (
-                                  <span className="text-xs text-slate-400">
-                                    Deleted — view only
-                                  </span>
-                                ) : (
-                                  <>
-                                    {proposal.studentResponse && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          void approveCorrection(proposal)
-                                        }
-                                        className="mr-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
-                                      >
-                                        Approve
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() => openReview(proposal)}
-                                      className="rounded-lg border border-blue-300 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50"
-                                    >
-                                      Review
-                                    </button>
-                                  </>
-                                )}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-              {researchTab === "panels" && (
-                <div className="mt-4">
-                  <p className="text-sm text-slate-500">
-                    Defenses you are on the panel of: which report is defended,
-                    when, where, and the document to assess.
-                  </p>
-                  <div
-                    className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
-                    role="tablist"
-                    aria-label="Degree level"
-                  >
-                    {PANEL_LEVELS.map((level) => (
-                      <button
-                        key={level.value}
-                        type="button"
-                        role="tab"
-                        aria-selected={panelLevel === level.value}
-                        onClick={() => setPanelLevel(level.value)}
-                        className={`rounded-lg px-3 py-1.5 text-sm font-medium ${panelLevel === level.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
-                      >
-                        {level.label}{" "}
-                        <span className="ml-1 text-xs text-slate-400">
-                          {panelDefensesAtLevel(level.value).length}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  {notice && (
-                    <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                      {notice}
-                    </p>
-                  )}
-                  <div className="mt-4 space-y-3">
-                    {panelDefensesAtLevel(panelLevel).length === 0 ? (
-                      <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-                        You aren't on any{" "}
-                        {PANEL_LEVELS.find(
-                          (level) => level.value === panelLevel,
-                        )?.label.toLowerCase()}{" "}
-                        panel yet.
-                      </p>
-                    ) : (
-                      panelDefensesAtLevel(panelLevel)
-                        .sort(
-                          (first, second) =>
-                            Number(first.hasEnded) - Number(second.hasEnded) ||
-                            new Date(first.defenseDate).getTime() -
-                              new Date(second.defenseDate).getTime(),
-                        )
-                        .map((defense) => (
-                          <div key={defense.id}>
-                            <DefenseCard
-                              defense={defense}
-                              showPeople
-                              onError={(message) => setError(message)}
-                            />
-                            {defense.hasEnded &&
-                              defense.currentStatus === "pending" && (
-                                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2">
-                                  <p className="text-xs text-slate-600">
-                                    Your panel decides this one. The outcome is
-                                    settled once every member has voted.
-                                  </p>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setVerdictForm({
-                                        verdict: "accept",
-                                        comments: "",
-                                      });
-                                      setVerdictError(null);
-                                      setVerdictTarget(defense);
-                                    }}
-                                    className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-                                  >
-                                    Give your verdict
-                                  </button>
-                                </div>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-slate-400">
+                          {degreeLevelLabel(item.level)}
+                          {proposal?.clusterName
+                            ? ` · ${proposal.clusterName}`
+                            : ""}
+                        </p>
+                        <h3 className="font-semibold text-slate-900">
+                          {paper?.title ?? proposal?.title}
+                        </h3>
+                        <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-600">
+                          <Users size={14} aria-hidden="true" />
+                          {studentNames(proposal)}
+                        </p>
+                      </div>
+                      {needsMe(item) && (
+                        <StatusBadge status="submitted" label="Needs your review" />
+                      )}
+                    </div>
+
+                    <ol className="mt-4 space-y-3 border-l-2 border-slate-100 pl-4">
+                      {proposal && (
+                        <li>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-sm font-medium text-slate-800">
+                              Proposal
+                            </p>
+                            <span className="flex items-center gap-1">
+                              <StatusBadge status={proposal.status} />
+                              {proposal.deletedAt && (
+                                <StatusBadge status="deleted" label="Deleted" />
                               )}
+                            </span>
                           </div>
-                        ))
-                    )}
-                  </div>
-                </div>
-              )}
-              {researchTab === "progress" && (
-                <div className="mt-4">
-                  <p className="text-sm text-slate-500">
-                    Progress reports submitted by the students you supervise,
-                    grouped by paper.
-                  </p>
-                  {papers.length === 0 ? (
-                    <p className="mt-4 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-                      No supervised papers yet. A paper is created when you
-                      approve a proposal.
-                    </p>
-                  ) : (
-                    papers.map((paper) => {
-                      const reports = progressReports.filter(
-                        (report) => report.paperId === paper.id,
-                      );
-                      return (
-                        <div
-                          key={paper.id}
-                          className="mt-4 rounded-xl border border-slate-200 p-4"
-                        >
-                          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                            <FileText size={16} aria-hidden="true" />{" "}
-                            {paper.title}
-                          </h3>
+                          {proposal.reviewComment && (
+                            <p className="mt-1 text-xs text-slate-500">
+                              Your comment: "{proposal.reviewComment}"
+                            </p>
+                          )}
+                          {proposal.studentResponse && (
+                            <p className="mt-1 text-xs text-blue-700">
+                              {proposal.respondedByName
+                                ? `${proposal.respondedByName} replied: `
+                                : "Reply: "}
+                              "{proposal.studentResponse}"
+                            </p>
+                          )}
+                          {proposal.deletedAt && (
+                            <p className="mt-1 text-xs text-slate-400">
+                              Deleted by {proposal.deletedByName ?? "an admin"} on{" "}
+                              {formatDate(proposal.deletedAt)}
+                            </p>
+                          )}
+                          {defenses
+                            .filter((defense) => defense.proposalId === proposal.id)
+                            .map((defense) => (
+                              <DefenseNotice key={defense.id} defense={defense} />
+                            ))}
+                          <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                            <DocumentActions
+                              kind="proposals"
+                              entityId={proposal.id}
+                              filename={proposal.originalFilename}
+                              fallbackName="proposal.pdf"
+                              onError={showError}
+                            />
+                            {proposal.deletedAt ? (
+                              <span className="text-xs text-slate-400">
+                                Deleted — view only
+                              </span>
+                            ) : (
+                              <span className="flex gap-2">
+                                {proposal.studentResponse &&
+                                  proposalsToReview.includes(proposal) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void approveCorrection(proposal)}
+                                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                                    >
+                                      Approve
+                                    </button>
+                                  )}
+                                <button
+                                  type="button"
+                                  onClick={() => openReview(proposal)}
+                                  className={
+                                    proposalsToReview.includes(proposal)
+                                      ? smallPrimaryButtonClass
+                                      : "inline-flex items-center gap-1 rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
+                                  }
+                                >
+                                  {proposalsToReview.includes(proposal)
+                                    ? "Review"
+                                    : "Change review"}
+                                </button>
+                              </span>
+                            )}
+                          </div>
+                        </li>
+                      )}
+
+                      {paper && (
+                        <li>
+                          <p className="text-sm font-medium text-slate-800">
+                            Progress reports
+                          </p>
                           {reports.length === 0 ? (
-                            <p className="mt-2 text-sm text-slate-500">
+                            <p className="mt-1 text-xs text-slate-500">
                               No progress reports submitted yet.
                             </p>
                           ) : (
                             reports.map((report) => (
                               <div
                                 key={report.id}
-                                className="mt-3 rounded-lg bg-slate-50 p-3 text-sm"
+                                className="mt-2 rounded-lg bg-slate-50 p-3 text-sm"
                               >
                                 <div className="flex flex-wrap items-start justify-between gap-2">
                                   <div>
@@ -1054,19 +1159,13 @@ function ProfessorDashboard() {
                                     </p>
                                     <p className="text-xs text-slate-500">
                                       By {report.submittedByName ?? "student"} ·{" "}
-                                      {new Date(
-                                        report.submittedAt,
-                                      ).toLocaleDateString()}
+                                      {formatDate(report.submittedAt)}
                                       {report.deadlineAt
-                                        ? ` · deadline ${new Date(report.deadlineAt).toLocaleString()}`
+                                        ? ` · deadline ${formatDateTime(report.deadlineAt)}`
                                         : ""}
                                     </p>
                                   </div>
-                                  <span
-                                    className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusStyles[report.status] ?? "bg-slate-100 text-slate-600"}`}
-                                  >
-                                    {formatStatus(report.status)}
-                                  </span>
+                                  <StatusBadge status={report.status} />
                                 </div>
                                 <p className="mt-2 whitespace-pre-line text-slate-700">
                                   {report.content}
@@ -1087,179 +1186,82 @@ function ProfessorDashboard() {
                                       defense={defense}
                                     />
                                   ))}
-                                <div className="mt-2 flex flex-wrap items-center gap-3">
-                                  {report.originalFilename && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          void viewDocumentFile(
-                                            "progress-reports",
-                                            report.id,
-                                          ).catch((viewError: unknown) =>
-                                            setError(
-                                              viewError instanceof Error
-                                                ? viewError.message
-                                                : "Unable to open the document.",
-                                            ),
-                                          )
-                                        }
-                                        className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"
-                                      >
-                                        <Eye size={14} /> View
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          void downloadDocumentFile(
-                                            "progress-reports",
-                                            report.id,
-                                            report.originalFilename ??
-                                              "progress-report.pdf",
-                                          ).catch((downloadError: unknown) =>
-                                            setError(
-                                              downloadError instanceof Error
-                                                ? downloadError.message
-                                                : "Unable to download the document.",
-                                            ),
-                                          )
-                                        }
-                                        className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"
-                                      >
-                                        <Download size={14} /> Download
-                                      </button>
-                                    </>
-                                  )}
-                                  {report.status === "submitted" && (
-                                    <button
-                                      type="button"
-                                      onClick={() => openReportReview(report)}
-                                      className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
-                                    >
-                                      Review
-                                    </button>
-                                  )}
+                                <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                                  <DocumentActions
+                                    kind="progress-reports"
+                                    entityId={report.id}
+                                    filename={report.originalFilename}
+                                    fallbackName="progress-report.pdf"
+                                    onError={showError}
+                                  />
+                                  {report.status === "submitted" &&
+                                    reviewButton("Review", () =>
+                                      openReportReview(report),
+                                    )}
                                 </div>
                               </div>
                             ))
                           )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              )}
-              {researchTab === "final" && (
-                <div className="mt-4">
-                  <p className="text-sm text-slate-500">
-                    Final reports to review, and the defenses your department
-                    has scheduled for your students.
-                  </p>
-                  {papers.length === 0 ? (
-                    <p className="mt-4 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-                      No supervised papers yet. A paper is created when you
-                      approve a proposal.
-                    </p>
-                  ) : (
-                    papers.map((paper) => (
-                      <div
-                        key={paper.id}
-                        className="mt-4 rounded-xl border border-slate-200 p-4"
-                      >
-                        <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                          <FileText size={16} aria-hidden="true" />{" "}
-                          {paper.title}
-                        </h3>
-                        <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm">
+                        </li>
+                      )}
+
+                      {paper && (
+                        <li>
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="font-medium text-slate-800">
+                            <p className="text-sm font-medium text-slate-800">
                               Final report
                             </p>
-                            <span
-                              className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusStyles[paper.finalReportStatus ?? ""] ?? "bg-slate-100 text-slate-600"}`}
-                            >
-                              {paper.finalReportStatus
-                                ? formatStatus(paper.finalReportStatus)
-                                : "Not submitted"}
-                            </span>
+                            <StatusBadge
+                              status={paper.finalReportStatus ?? "not_submitted"}
+                            />
                           </div>
                           {paper.finalReportReviewComment && (
                             <p className="mt-1 text-xs text-blue-600">
                               Your comment: "{paper.finalReportReviewComment}"
                             </p>
                           )}
-                          <div className="mt-2 flex flex-wrap items-center gap-3">
-                            {paper.finalReportOriginalFilename && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void viewDocumentFile(
-                                      "papers",
-                                      paper.id,
-                                    ).catch((viewError: unknown) =>
-                                      setError(
-                                        viewError instanceof Error
-                                          ? viewError.message
-                                          : "Unable to open the document.",
-                                      ),
-                                    )
-                                  }
-                                  className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"
-                                >
-                                  <Eye size={14} /> View
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void downloadDocumentFile(
-                                      "papers",
-                                      paper.id,
-                                      paper.finalReportOriginalFilename ??
-                                        "final-report.pdf",
-                                    ).catch((downloadError: unknown) =>
-                                      setError(
-                                        downloadError instanceof Error
-                                          ? downloadError.message
-                                          : "Unable to download the document.",
-                                      ),
-                                    )
-                                  }
-                                  className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"
-                                >
-                                  <Download size={14} /> Download
-                                </button>
-                              </>
-                            )}
-                            {paper.finalReportStatus === "submitted" && (
-                              <button
-                                type="button"
-                                onClick={() => openFinalReportReview(paper)}
-                                className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
-                              >
-                                Review
-                              </button>
-                            )}
+                          <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                            <DocumentActions
+                              kind="papers"
+                              entityId={paper.id}
+                              filename={paper.finalReportOriginalFilename}
+                              fallbackName="final-report.pdf"
+                              onError={showError}
+                            />
+                            {paper.finalReportStatus === "submitted" &&
+                              reviewButton("Review", () =>
+                                openFinalReportReview(paper),
+                              )}
                           </div>
-                        </div>
-                        {defenses.filter(
-                          (defense) => defense.paperId === paper.id,
-                        ).length === 0 ? (
-                          <p className="mt-3 text-xs text-slate-500">
-                            No defense scheduled yet. The department schedules
-                            it after you approve the final report.
+                        </li>
+                      )}
+
+                      {paper && (
+                        <li>
+                          <p className="text-sm font-medium text-slate-800">
+                            Final defense
                           </p>
-                        ) : (
-                          defenses
-                            .filter((defense) => defense.paperId === paper.id)
-                            .map((defense) => (
+                          {finalDefenses.length === 0 ? (
+                            <p className="mt-1 text-xs text-slate-500">
+                              {paper.finalReportStatus === "approved"
+                                ? "Not scheduled yet. The department schedules it now that you've approved the final report."
+                                : "Scheduled by the department after you approve the final report."}
+                            </p>
+                          ) : (
+                            finalDefenses.map((defense) => (
                               <div
                                 key={defense.id}
-                                className={`mt-3 rounded-lg border p-3 text-sm ${DEFENSE_TONE_STYLES[defenseTone(defense)].card}`}
+                                className={`mt-2 rounded-lg border p-3 text-sm ${DEFENSE_TONE_STYLES[defenseTone(defense)].card}`}
                               >
                                 <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <p className="font-medium text-slate-800">
-                                    Final defense
+                                  <p className="text-slate-700">
+                                    {formatDefenseDate(defense.defenseDate)}
+                                    {defense.scheduledTime
+                                      ? ` at ${defense.scheduledTime.slice(0, 5)}`
+                                      : ""}
+                                    {defense.location
+                                      ? ` · ${defense.location}`
+                                      : ""}
                                   </p>
                                   <span
                                     className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${DEFENSE_TONE_STYLES[defenseTone(defense)].badge}`}
@@ -1267,22 +1269,9 @@ function ProfessorDashboard() {
                                     {defense.currentStatus === "pending" &&
                                     !defense.submissionConfirmed
                                       ? "Awaiting thesis"
-                                      : DEFENSE_TONE_LABELS[
-                                          defenseTone(defense)
-                                        ]}
+                                      : DEFENSE_TONE_LABELS[defenseTone(defense)]}
                                   </span>
                                 </div>
-                                <p className="mt-1 text-slate-700">
-                                  {new Date(
-                                    defense.defenseDate,
-                                  ).toLocaleDateString()}
-                                  {defense.scheduledTime
-                                    ? ` at ${defense.scheduledTime.slice(0, 5)}`
-                                    : ""}
-                                  {defense.location
-                                    ? ` · ${defense.location}`
-                                    : ""}
-                                </p>
                                 {defense.panelNames.length > 0 && (
                                   <p className="text-xs text-slate-500">
                                     Panel: {defense.panelNames.join(", ")}
@@ -1306,344 +1295,283 @@ function ProfessorDashboard() {
                                     {defense.outcomeComments}
                                   </p>
                                 )}
-                                {defense.originalFilename && (
-                                  <div className="mt-2 flex flex-wrap items-center gap-3">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        void viewDocumentFile(
-                                          "defenses",
-                                          defense.id,
-                                        ).catch((viewError: unknown) =>
-                                          setError(
-                                            viewError instanceof Error
-                                              ? viewError.message
-                                              : "Unable to open the document.",
-                                          ),
-                                        )
-                                      }
-                                      className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"
-                                    >
-                                      <Eye size={14} /> View thesis
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        void downloadDocumentFile(
-                                          "defenses",
-                                          defense.id,
-                                          defense.originalFilename ??
-                                            "final-thesis.pdf",
-                                        ).catch((downloadError: unknown) =>
-                                          setError(
-                                            downloadError instanceof Error
-                                              ? downloadError.message
-                                              : "Unable to download the document.",
-                                          ),
-                                        )
-                                      }
-                                      className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"
-                                    >
-                                      <Download size={14} /> Download
-                                    </button>
-                                  </div>
-                                )}
+                                <div className="mt-2">
+                                  <DocumentActions
+                                    kind="defenses"
+                                    entityId={defense.id}
+                                    filename={defense.originalFilename}
+                                    fallbackName="final-thesis.pdf"
+                                    onError={showError}
+                                    viewLabel="View thesis"
+                                  />
+                                </div>
                               </div>
                             ))
+                          )}
+                        </li>
+                      )}
+                    </ol>
+                  </article>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {section === "panels" && (
+          <div className="space-y-4">
+            <SectionHeader
+              title="Defenses you sit on"
+              description="Which report is defended, when, where, and the document to assess. After the defense day, give your verdict; the panel's majority decides."
+            />
+            <SegmentedControl
+              label="Degree level"
+              options={countAtLevel(panelDefenses, (defense) => defense.degreeLevel)}
+              value={panelLevel}
+              onChange={setPanelLevel}
+            />
+            {visiblePanels.length === 0 ? (
+              <EmptyState title="You aren't on any panel here yet">
+                The department adds you to a panel when it schedules a defense.
+              </EmptyState>
+            ) : (
+              <div className="space-y-3">
+                {visiblePanels.map((defense) => (
+                  <div key={defense.id}>
+                    <DefenseCard
+                      defense={defense}
+                      showPeople
+                      onError={showError}
+                    />
+                    {defense.hasEnded && defense.currentStatus === "pending" && (
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2">
+                        <p className="text-xs text-blue-900">
+                          Your panel decides this one. The outcome is settled
+                          once every member has voted.
+                        </p>
+                        {reviewButton("Give or change verdict", () =>
+                          openVerdict(defense),
                         )}
                       </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </section>
-          )}
-        </div>
-      </div>
-      {reviewing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-900">
-                  Review proposal
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">{reviewing.title}</p>
-              </div>
-              <button
-                type="button"
-                aria-label="Close review form"
-                onClick={closeReview}
-                className="flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-              >
-                <X size={18} aria-hidden="true" />
-              </button>
-            </div>
-            {reviewing.studentResponse && (
-              <p className="mt-4 rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
-                {reviewing.respondedByName
-                  ? `${reviewing.respondedByName} addressed your feedback: `
-                  : "The group replied: "}
-                "{reviewing.studentResponse}"
-              </p>
-            )}
-            <form onSubmit={submitReview} className="mt-6 space-y-4">
-              <div className="grid gap-1.5 text-sm font-medium text-slate-700">
-                Decision
-                <div className="flex flex-wrap gap-2">
-                  {(
-                    ["approved", "changes_requested", "rejected"] as Decision[]
-                  ).map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      onClick={() => setDecision(option)}
-                      className={`rounded-lg border px-3 py-2 text-sm font-medium capitalize ${
-                        decision === option
-                          ? "border-blue-500 bg-blue-600 text-white"
-                          : "border-slate-300 text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      {formatStatus(option)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <label className="block text-sm font-medium text-slate-700">
-                Comment{" "}
-                <span className="font-normal text-slate-500">(optional)</span>
-                <textarea
-                  rows={4}
-                  value={comment}
-                  onChange={(event) => setComment(event.target.value)}
-                  placeholder="Share feedback with the student..."
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-                />
-              </label>
-              {reviewError && (
-                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                  {reviewError}
-                </p>
-              )}
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={closeReview}
-                  className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingReview}
-                  className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isSubmittingReview ? "Submitting..." : "Submit review"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-      {(reviewingReport || reviewingFinalReport) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-900">
-                  {reviewingReport
-                    ? "Review progress report"
-                    : "Review final report"}
-                </h2>
-                {reviewingReport && (
-                  <p className="mt-1 text-sm text-slate-500">
-                    {reviewingReport.content}
-                  </p>
-                )}
-              </div>
-              <button
-                type="button"
-                aria-label="Close review form"
-                onClick={() => {
-                  setReviewingReport(null);
-                  setReviewingFinalReport(null);
-                }}
-                className="flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-              >
-                <X size={18} aria-hidden="true" />
-              </button>
-            </div>
-            <form
-              onSubmit={
-                reviewingReport ? submitReportReview : submitFinalReportReview
-              }
-              className="mt-6 space-y-4"
-            >
-              <div className="grid gap-1.5 text-sm font-medium text-slate-700">
-                Decision
-                <div className="flex flex-wrap gap-2">
-                  {(
-                    ["approved", "changes_requested", "rejected"] as Decision[]
-                  ).map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      onClick={() => setPaperDecision(option)}
-                      className={`rounded-lg border px-3 py-2 text-sm font-medium capitalize ${
-                        paperDecision === option
-                          ? "border-blue-500 bg-blue-600 text-white"
-                          : "border-slate-300 text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      {formatStatus(option)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <label className="block text-sm font-medium text-slate-700">
-                Comment{" "}
-                <span className="font-normal text-slate-500">(optional)</span>
-                <textarea
-                  rows={4}
-                  value={paperComment}
-                  onChange={(event) => setPaperComment(event.target.value)}
-                  placeholder="Share feedback with the student..."
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-                />
-              </label>
-              {paperError && (
-                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                  {paperError}
-                </p>
-              )}
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setReviewingReport(null);
-                    setReviewingFinalReport(null);
-                  }}
-                  className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-                >
-                  Submit review
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-      {verdictTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl"
-          >
-            <h2 className="text-xl font-semibold text-slate-900">
-              Your verdict
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
-              {verdictTarget.paperTitle ?? "Untitled research"} ·{" "}
-              {verdictTarget.studentNames.join(", ") || "the student"}
-            </p>
-            <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
-              The panel of {verdictTarget.panelNames.length} decides this by
-              majority. Nobody sees your vote until every member has voted.
-            </p>
-            <form onSubmit={submitVerdict} className="mt-4 space-y-4">
-              <div className="grid gap-2 sm:grid-cols-2">
-                {(
-                  [
-                    {
-                      value: "accept" as const,
-                      label: "Accept",
-                      hint: "Passed, as far as you are concerned.",
-                      selected: "border-emerald-400 bg-emerald-50",
-                    },
-                    {
-                      value: "reject" as const,
-                      label: "Reject",
-                      hint: "Not good enough yet. Say why below.",
-                      selected: "border-red-400 bg-red-50",
-                    },
-                  ] as const
-                ).map((choice) => (
-                  <label
-                    key={choice.value}
-                    className={`flex cursor-pointer items-start gap-2 rounded-xl border p-3 text-sm ${verdictForm.verdict === choice.value ? choice.selected : "border-slate-200 hover:bg-slate-50"}`}
-                  >
-                    <input
-                      type="radio"
-                      name="verdict"
-                      className="mt-1"
-                      checked={verdictForm.verdict === choice.value}
-                      onChange={() =>
-                        setVerdictForm({
-                          ...verdictForm,
-                          verdict: choice.value,
-                        })
-                      }
-                    />
-                    <span>
-                      <span className="block font-medium text-slate-800">
-                        {choice.label}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {choice.hint}
-                      </span>
-                    </span>
-                  </label>
+                    )}
+                  </div>
                 ))}
               </div>
-              <label className="block text-sm font-medium text-slate-700">
-                Feedback for the student
-                {verdictForm.verdict === "reject" ? "" : " (optional)"}
-                <textarea
-                  required={verdictForm.verdict === "reject"}
-                  rows={4}
-                  value={verdictForm.comments}
-                  onChange={(event) =>
-                    setVerdictForm({
-                      ...verdictForm,
-                      comments: event.target.value,
-                    })
-                  }
-                  placeholder="What the student should know about your decision."
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-                />
-              </label>
-              {verdictError && (
-                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                  {verdictError}
-                </p>
-              )}
-              <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setVerdictTarget(null)}
-                  className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingVerdict}
-                  className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {isSavingVerdict ? "Saving..." : "Submit verdict"}
-                </button>
-              </div>
-            </form>
+            )}
           </div>
-        </div>
+        )}
+      </AppShell>
+
+      {reviewing && (
+        <Modal title="Review proposal" subtitle={reviewing.title} onClose={closeReview}>
+          {reviewing.studentResponse && (
+            <p className="mt-4 rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
+              {reviewing.respondedByName
+                ? `${reviewing.respondedByName} addressed your feedback: `
+                : "The group replied: "}
+              "{reviewing.studentResponse}"
+            </p>
+          )}
+          <div className="mt-4">
+            <DocumentActions
+              kind="proposals"
+              entityId={reviewing.id}
+              filename={reviewing.originalFilename}
+              fallbackName="proposal.pdf"
+              onError={setReviewError}
+            />
+          </div>
+          <form onSubmit={submitReview} className="mt-4 space-y-4">
+            <DecisionPicker value={decision} onChange={setDecision} />
+            <label className="block text-sm font-medium text-slate-700">
+              Comment{" "}
+              <span className="font-normal text-slate-500">(optional)</span>
+              <textarea
+                rows={4}
+                value={comment}
+                onChange={(event) => setComment(event.target.value)}
+                placeholder="Share feedback with the student..."
+                className={inputClass}
+              />
+            </label>
+            <FormError message={reviewError} />
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" onClick={closeReview} className={secondaryButtonClass}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingReview}
+                className={primaryButtonClass}
+              >
+                {isSubmittingReview ? "Submitting..." : "Submit review"}
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
-    </div>
+
+      {(reviewingReport || reviewingFinalReport) && (
+        <Modal
+          title={reviewingReport ? "Review progress report" : "Review final report"}
+          subtitle={
+            reviewingReport
+              ? `${reviewingReport.phaseLabel ?? "Progress report"} · ${paperTitle(reviewingReport.paperId)}`
+              : reviewingFinalReport?.title
+          }
+          onClose={closePaperReview}
+        >
+          {reviewingReport && (
+            <p className="mt-4 whitespace-pre-line rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+              {reviewingReport.content}
+            </p>
+          )}
+          <div className="mt-4">
+            {reviewingReport ? (
+              <DocumentActions
+                kind="progress-reports"
+                entityId={reviewingReport.id}
+                filename={reviewingReport.originalFilename}
+                fallbackName="progress-report.pdf"
+                onError={setPaperError}
+              />
+            ) : (
+              reviewingFinalReport && (
+                <DocumentActions
+                  kind="papers"
+                  entityId={reviewingFinalReport.id}
+                  filename={reviewingFinalReport.finalReportOriginalFilename}
+                  fallbackName="final-report.pdf"
+                  onError={setPaperError}
+                />
+              )
+            )}
+          </div>
+          <form
+            onSubmit={reviewingReport ? submitReportReview : submitFinalReportReview}
+            className="mt-4 space-y-4"
+          >
+            <DecisionPicker value={paperDecision} onChange={setPaperDecision} />
+            <label className="block text-sm font-medium text-slate-700">
+              Comment{" "}
+              <span className="font-normal text-slate-500">(optional)</span>
+              <textarea
+                rows={4}
+                value={paperComment}
+                onChange={(event) => setPaperComment(event.target.value)}
+                placeholder="Share feedback with the student..."
+                className={inputClass}
+              />
+            </label>
+            <FormError message={paperError} />
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" onClick={closePaperReview} className={secondaryButtonClass}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingPaperReview}
+                className={primaryButtonClass}
+              >
+                {isSubmittingPaperReview ? "Submitting..." : "Submit review"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {verdictTarget && (
+        <Modal
+          title="Your verdict"
+          subtitle={`${verdictTarget.paperTitle ?? "Untitled research"} · ${verdictTarget.studentNames.join(", ") || "the student"}`}
+          onClose={() => setVerdictTarget(null)}
+        >
+          <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
+            The panel of {verdictTarget.panelNames.length} decides this by
+            majority. Nobody sees your vote until every member has voted. If you
+            already voted, submitting again replaces your vote.
+          </p>
+          <form onSubmit={submitVerdict} className="mt-4 space-y-4">
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(
+                [
+                  {
+                    value: "accept" as const,
+                    label: "Accept",
+                    hint: "Passed, as far as you are concerned.",
+                    selected: "border-emerald-400 bg-emerald-50",
+                  },
+                  {
+                    value: "reject" as const,
+                    label: "Reject",
+                    hint: "Not good enough yet. Say why below.",
+                    selected: "border-red-400 bg-red-50",
+                  },
+                ] as const
+              ).map((choice) => (
+                <label
+                  key={choice.value}
+                  className={`flex cursor-pointer items-start gap-2 rounded-xl border p-3 text-sm ${verdictForm.verdict === choice.value ? choice.selected : "border-slate-200 hover:bg-slate-50"}`}
+                >
+                  <input
+                    type="radio"
+                    name="verdict"
+                    className="mt-1"
+                    checked={verdictForm.verdict === choice.value}
+                    onChange={() =>
+                      setVerdictForm({
+                        ...verdictForm,
+                        verdict: choice.value,
+                      })
+                    }
+                  />
+                  <span>
+                    <span className="block font-medium text-slate-800">
+                      {choice.label}
+                    </span>
+                    <span className="text-xs text-slate-500">{choice.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <label className="block text-sm font-medium text-slate-700">
+              Feedback for the student
+              {verdictForm.verdict === "reject" ? "" : " (optional)"}
+              <textarea
+                required={verdictForm.verdict === "reject"}
+                rows={4}
+                value={verdictForm.comments}
+                onChange={(event) =>
+                  setVerdictForm({
+                    ...verdictForm,
+                    comments: event.target.value,
+                  })
+                }
+                placeholder="What the student should know about your decision."
+                className={inputClass}
+              />
+            </label>
+            <FormError message={verdictError} />
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setVerdictTarget(null)}
+                className={secondaryButtonClass}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingVerdict}
+                className={primaryButtonClass}
+              >
+                {isSavingVerdict ? "Saving..." : "Submit verdict"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </>
   );
 }
 
