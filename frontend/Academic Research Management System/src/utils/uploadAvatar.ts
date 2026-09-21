@@ -1,5 +1,5 @@
-export const API_ORIGIN = "http://127.0.0.1:8000";
-const ENDPOINT = `${API_ORIGIN}/graphql`;
+export const API_ORIGIN = "http://10.1.186.127:8000";
+const ENDPOINT = import.meta.env.VITE_API_URL
 
 const UPLOAD_PROFILE_IMAGE = `mutation UploadProfileImage($file: Upload!) { uploadProfileImage(file: $file) { avatarUrl } }`;
 
@@ -22,7 +22,14 @@ export async function uploadAvatarImage(file: File): Promise<string | null> {
     headers: { Authorization: `Bearer ${localStorage.getItem("accessToken") ?? ""}` },
     body: formData,
   });
-  const result = (await response.json()) as UploadAvatarResponse;
+  // A rejected request (e.g. uploads disabled on the server) can come back as plain text, not JSON.
+  const text = await response.text();
+  let result: UploadAvatarResponse;
+  try {
+    result = JSON.parse(text) as UploadAvatarResponse;
+  } catch {
+    throw new Error(`Unable to upload image (${response.status}${text ? `: ${text}` : ""}).`);
+  }
   if (!response.ok || result.errors?.length) {
     throw new Error(result.errors?.[0]?.message ?? "Unable to upload image.");
   }

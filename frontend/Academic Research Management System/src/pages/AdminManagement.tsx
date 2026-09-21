@@ -2,9 +2,27 @@ import { useEffect, useState } from "react";
 import { Download, Eye, Pencil, Plus, Trash2, X } from "lucide-react";
 import { gql } from "@apollo/client";
 import { print } from "graphql";
+import NotificationBell from "../components/NotificationBell";
 import { downloadProposalFile, viewProposalFile } from "../utils/proposalFile";
-import { DEFENSE_CANDIDATES_QUERY, PROFILES_QUERY, RESEARCH_PHASES_QUERY } from "../queries/queries";
-import { CREATE_RESEARCH_PHASE, DELETE_RESEARCH_PHASE, SCHEDULE_RESEARCH_DEFENSE, UPDATE_RESEARCH_PHASE } from "../mutations/mutations";
+import {
+  DEFENSE_TONE_LABELS,
+  DEFENSE_TONE_STYLES,
+  defenseTone,
+  formatDefenseDate,
+} from "../utils/defenses";
+import {
+  DEFENSE_CANDIDATES_QUERY,
+  PROFILES_QUERY,
+  RESEARCH_PHASES_QUERY,
+} from "../queries/queries";
+import {
+  CLOSE_RESEARCH_PHASE,
+  CREATE_RESEARCH_PHASE,
+  DELETE_RESEARCH_PHASE,
+  OPEN_RESEARCH_PHASE,
+  SCHEDULE_RESEARCH_DEFENSE,
+  UPDATE_RESEARCH_PHASE,
+} from "../mutations/mutations";
 
 interface Department {
   id: string;
@@ -79,6 +97,11 @@ interface ScheduledDefense {
   supervisorName: string | null;
   panelNames: string[];
   panelProfessorIds: string[];
+  outcomeComments: string | null;
+  outcomeRecordedAt: string | null;
+  outcomeRecordedByName: string | null;
+  requiresRedefense: boolean;
+  hasEnded: boolean;
 }
 type DefenseKind = "proposal" | "progress_report" | "defense";
 interface DefenseCandidate {
@@ -94,8 +117,31 @@ interface DefenseCandidate {
   defense: ScheduledDefense | null;
 }
 // What the plan-defense form is planning: one proposal, progress report or final report.
-interface PlanTarget { kind: string; targetId: string; title: string; phaseId: string | null; suggestedDate: string | null; supervisorName: string | null; existing: ScheduledDefense | null; }
-interface ResearchPhase { id: string; phaseType: string; degreeLevel: string; label: string; sequenceNumber: number; opensAt: string | null; deadlineAt: string | null; defenseDate: string | null; gracePeriodEnabled: boolean; isOpen: boolean; hasEnded: boolean; }
+interface PlanTarget {
+  kind: string;
+  targetId: string;
+  title: string;
+  phaseId: string | null;
+  suggestedDate: string | null;
+  supervisorName: string | null;
+  existing: ScheduledDefense | null;
+}
+interface ResearchPhase {
+  id: string;
+  phaseType: string;
+  degreeLevel: string;
+  label: string;
+  sequenceNumber: number;
+  opensAt: string | null;
+  deadlineAt: string | null;
+  defenseDate: string | null;
+  gracePeriodEnabled: boolean;
+  isOpen: boolean;
+  hasEnded: boolean;
+  // pending | open | closed — set by the admin, never by the deadline passing.
+  status: string;
+  closedAt: string | null;
+}
 interface GraphQLResult<T> {
   data?: T;
   errors?: { message: string }[];
@@ -104,7 +150,7 @@ interface GraphQLResult<T> {
 type Tab = "departments" | "degrees" | "clusters" | "lifecycle";
 type LifecycleSection = "timeline" | "proposals" | "defenses";
 type AdminRole = "admin" | "super_admin";
-const ENDPOINT = "http://127.0.0.1:8000/graphql";
+const ENDPOINT = import.meta.env.VITE_API_URL
 const DEPARTMENTS = gql`
   query Departments {
     departments {
@@ -145,8 +191,8 @@ const USERS = gql`
   }
 `;
 const PROPOSALS = gql`
-  query Proposals {
-    proposals {
+  query Proposals($includeDeleted: Boolean!) {
+    proposals(includeDeleted: $includeDeleted) {
       id
       submittedBy
       submittedByName
@@ -155,7 +201,11 @@ const PROPOSALS = gql`
       supervisorId
       supervisorName
       clusterId
-      groupMembers { id name status }
+      groupMembers {
+        id
+        name
+        status
+      }
       reviewComment
       reviewedByName
       deletedAt
@@ -174,7 +224,35 @@ const DELETE_PROPOSAL_AS_ADMIN = gql`
     }
   }
 `;
-const DEPARTMENT_DEFENSES = gql`query DepartmentDefenses { departmentDefenses { id kind proposalId progressReportId paperId paperTitle defenseDate scheduledTime location submissionConfirmed phaseId phaseLabel currentStatus degreeLevel studentNames supervisorName panelNames panelProfessorIds } }`;
+const DEPARTMENT_DEFENSES = gql`
+  query DepartmentDefenses {
+    departmentDefenses {
+      id
+      kind
+      proposalId
+      progressReportId
+      paperId
+      paperTitle
+      defenseDate
+      scheduledTime
+      location
+      submissionConfirmed
+      phaseId
+      phaseLabel
+      currentStatus
+      degreeLevel
+      studentNames
+      supervisorName
+      panelNames
+      panelProfessorIds
+      outcomeComments
+      outcomeRecordedAt
+      outcomeRecordedByName
+      requiresRedefense
+      hasEnded
+    }
+  }
+`;
 const CREATE_DEPARTMENT = gql`
   mutation CreateDepartment($adminInput: DepartmentCreateInput!) {
     createDepartment(adminInput: $adminInput) {
@@ -278,12 +356,20 @@ const ASSIGN_PROPOSAL = gql`
 `;
 const ADD_PROPOSAL_MEMBER_AS_ADMIN = gql`
   mutation AddProposalMemberAsAdmin($studentInput: AdminProposalMemberInput!) {
-    addProposalMemberAsAdmin(studentInput: $studentInput) { proposalId studentId }
+    addProposalMemberAsAdmin(studentInput: $studentInput) {
+      proposalId
+      studentId
+    }
   }
 `;
 const DELETE_PROPOSAL_MEMBER_AS_ADMIN = gql`
-  mutation DeleteProposalMemberAsAdmin($studentInput: AdminProposalMemberInput!) {
-    deleteProposalMemberAsAdmin(studentInput: $studentInput) { proposalId studentId }
+  mutation DeleteProposalMemberAsAdmin(
+    $studentInput: AdminProposalMemberInput!
+  ) {
+    deleteProposalMemberAsAdmin(studentInput: $studentInput) {
+      proposalId
+      studentId
+    }
   }
 `;
 
@@ -320,18 +406,41 @@ const buttonClass =
   "inline-flex items-center gap-2 rounded-lg border border-blue-300 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50";
 
 const PHASE_TYPES = [
-  { value: "proposal", label: "Proposal", hint: "Students submit their research proposals between the opening time and the deadline." },
-  { value: "progress_report", label: "Progress report", hint: "Add one progress report phase per review round. Each round has its own deadline." },
-  { value: "defense", label: "Final defense", hint: "One shared defense day. Individual time slots are scheduled per paper below." },
+  {
+    value: "proposal",
+    label: "Proposal",
+    hint: "Students submit their research proposals between the opening time and the deadline.",
+  },
+  {
+    value: "progress_report",
+    label: "Progress report",
+    hint: "Add one progress report phase per review round. Each round has its own deadline.",
+  },
+  {
+    value: "defense",
+    label: "Final defense",
+    hint: "One shared defense day. Individual time slots are scheduled per paper below.",
+  },
 ] as const;
 const DEGREE_LEVELS = [
   { value: "bachelors", label: "Bachelor's" },
   { value: "masters", label: "Master's" },
   { value: "phd", label: "PhD" },
 ] as const;
-const phaseTypeLabel = (phaseType: string) => PHASE_TYPES.find((item) => item.value === phaseType)?.label ?? phaseType;
-const degreeLevelLabel = (level: string) => DEGREE_LEVELS.find((item) => item.value === level)?.label ?? level;
-const emptyPhaseForm = { phaseType: "proposal", degreeLevel: "bachelors", label: "", sequenceNumber: "1", opensAt: "", deadlineAt: "", defenseDate: "", gracePeriodEnabled: false };
+const phaseTypeLabel = (phaseType: string) =>
+  PHASE_TYPES.find((item) => item.value === phaseType)?.label ?? phaseType;
+const degreeLevelLabel = (level: string) =>
+  DEGREE_LEVELS.find((item) => item.value === level)?.label ?? level;
+const emptyPhaseForm = {
+  phaseType: "proposal",
+  degreeLevel: "bachelors",
+  label: "",
+  sequenceNumber: "1",
+  opensAt: "",
+  deadlineAt: "",
+  defenseDate: "",
+  gracePeriodEnabled: false,
+};
 
 const padTwo = (value: number) => String(value).padStart(2, "0");
 // <input type="datetime-local"> wants local wall-clock time, not an ISO string in UTC.
@@ -341,42 +450,85 @@ const toDateTimeInput = (iso: string | null) => {
   return `${date.getFullYear()}-${padTwo(date.getMonth() + 1)}-${padTwo(date.getDate())}T${padTwo(date.getHours())}:${padTwo(date.getMinutes())}`;
 };
 // Supervision limits, kept in step with backend/app/constraints.py (which enforces them).
-const SUPERVISION_LIMITS = { bachelorsGroups: 1, mastersStudents: 5, phdStudents: 4, totalStudents: 12 };
-const ACTIVE_SUPERVISION_STATUSES = new Set(["assigned", "approved", "accepted", "changes_requested", "in_progress"]);
+// One active project per degree level, per professor — a Bachelor's group is one project
+// however many students it has. Mirrors backend/app/constraints.py.
+const SUPERVISION_LIMITS = { projectsPerLevel: 1, totalStudents: 12 };
+const ACTIVE_SUPERVISION_STATUSES = new Set([
+  "assigned",
+  "approved",
+  "accepted",
+  "changes_requested",
+  "in_progress",
+]);
+// Stands in for "belongs to no research phase" in the round selector, where null
+// already means "every round".
+const NO_PHASE = "none";
 const DEFENSE_KINDS: { value: DefenseKind; label: string }[] = [
   { value: "proposal", label: "Proposal defenses" },
   { value: "progress_report", label: "Progress report defenses" },
   { value: "defense", label: "Final defenses" },
 ];
 const defenseReportLabel = (kind: string) =>
-  kind === "proposal" ? "Proposal" : kind === "progress_report" ? "Progress report" : "Final report";
+  kind === "proposal"
+    ? "Proposal"
+    : kind === "progress_report"
+      ? "Progress report"
+      : "Final report";
 const defenseKindLabel = (kind: string) =>
-  kind === "proposal" ? "Proposal defense" : kind === "progress_report" ? "Progress defense" : "Final defense";
-const describeDefenseSlot = (defense: { defenseDate: string; scheduledTime: string | null; location: string | null }) =>
+  kind === "proposal"
+    ? "Proposal defense"
+    : kind === "progress_report"
+      ? "Progress defense"
+      : "Final defense";
+const describeDefenseSlot = (defense: {
+  defenseDate: string;
+  scheduledTime: string | null;
+  location: string | null;
+}) =>
   `${new Date(defense.defenseDate).toLocaleDateString(undefined, { dateStyle: "medium" })}${defense.scheduledTime ? ` at ${defense.scheduledTime.slice(0, 5)}` : ""}${defense.location ? ` · ${defense.location}` : ""}`;
-const formatPhaseDateTime = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+const formatPhaseDateTime = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 
-function phaseStatus(phase: ResearchPhase): { label: string; className: string } {
+function phaseStatus(phase: ResearchPhase): {
+  label: string;
+  className: string;
+} {
+  // The admin's own status comes first: a phase runs because they opened it, not
+  // because its dates say so. The dates only refine what an open phase is doing.
+  if (phase.status === "pending")
+    return { label: "Not started", className: "bg-slate-100 text-slate-600" };
+  if (phase.status === "closed")
+    return { label: "Closed", className: "bg-slate-200 text-slate-700" };
   const now = Date.now();
   if (phase.phaseType === "defense") {
-    if (!phase.defenseDate) return { label: "No date", className: "bg-slate-100 text-slate-600" };
+    if (!phase.defenseDate)
+      return { label: "No date", className: "bg-slate-100 text-slate-600" };
     const endOfDefenseDay = new Date(phase.defenseDate);
     endOfDefenseDay.setHours(23, 59, 59, 999);
     return endOfDefenseDay.getTime() < now
-      ? { label: "Held", className: "bg-slate-100 text-slate-600" }
-      : { label: "Scheduled", className: "bg-blue-50 text-blue-700" };
+      ? { label: "Open · day held", className: "bg-amber-50 text-amber-700" }
+      : { label: "Open · scheduled", className: "bg-emerald-50 text-emerald-700" };
   }
-  if (phase.opensAt && new Date(phase.opensAt).getTime() > now) return { label: "Upcoming", className: "bg-slate-100 text-slate-600" };
+  if (phase.opensAt && new Date(phase.opensAt).getTime() > now)
+    return { label: "Open · not yet due", className: "bg-blue-50 text-blue-700" };
   if (phase.deadlineAt && new Date(phase.deadlineAt).getTime() < now) {
     return phase.gracePeriodEnabled
-      ? { label: "Past deadline · late allowed", className: "bg-amber-50 text-amber-700" }
-      : { label: "Closed", className: "bg-red-50 text-red-700" };
+      ? {
+          label: "Past deadline · late allowed",
+          className: "bg-amber-50 text-amber-700",
+        }
+      : { label: "Past deadline · no submissions", className: "bg-amber-50 text-amber-700" };
   }
   return { label: "Open", className: "bg-emerald-50 text-emerald-700" };
 }
 
 function AdminManagement({ role }: { role: AdminRole }) {
-  const [tab, setTab] = useState<Tab>(role === "super_admin" ? "departments" : "degrees");
+  const [tab, setTab] = useState<Tab>(
+    role === "super_admin" ? "departments" : "degrees",
+  );
   const [departments, setDepartments] = useState<Department[]>([]);
   const [degrees, setDegrees] = useState<DegreeProgram[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
@@ -386,10 +538,14 @@ function AdminManagement({ role }: { role: AdminRole }) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Per-form errors so a failed submit shows inside the open modal, not on the page behind it.
-  const [departmentFormError, setDepartmentFormError] = useState<string | null>(null);
+  const [departmentFormError, setDepartmentFormError] = useState<string | null>(
+    null,
+  );
   const [degreeFormError, setDegreeFormError] = useState<string | null>(null);
   const [clusterFormError, setClusterFormError] = useState<string | null>(null);
-  const [proposalFormError, setProposalFormError] = useState<string | null>(null);
+  const [proposalFormError, setProposalFormError] = useState<string | null>(
+    null,
+  );
   const [editing, setEditing] = useState<{
     type: "department" | "degree" | "cluster";
     id: string;
@@ -413,19 +569,35 @@ function AdminManagement({ role }: { role: AdminRole }) {
   const [isDegreeFormOpen, setIsDegreeFormOpen] = useState(false);
   const [isClusterFormOpen, setIsClusterFormOpen] = useState(false);
   const [isProposalFormOpen, setIsProposalFormOpen] = useState(false);
-  const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
+  const [editingProposalId, setEditingProposalId] = useState<string | null>(
+    null,
+  );
   const [groupStudentId, setGroupStudentId] = useState("");
-  const [scheduledDefenses, setScheduledDefenses] = useState<ScheduledDefense[]>([]);
+  const [scheduledDefenses, setScheduledDefenses] = useState<
+    ScheduledDefense[]
+  >([]);
   const [researchPhases, setResearchPhases] = useState<ResearchPhase[]>([]);
-  const [lifecycleSection, setLifecycleSection] = useState<LifecycleSection>("timeline");
+  const [lifecycleSection, setLifecycleSection] =
+    useState<LifecycleSection>("timeline");
   const [defenseError, setDefenseError] = useState<string | null>(null);
   // The lifecycle tab works on one degree level at a time.
   const [lifecycleLevel, setLifecycleLevel] = useState("bachelors");
   const [defenseKind, setDefenseKind] = useState<DefenseKind>("proposal");
-  const [defenseCandidates, setDefenseCandidates] = useState<DefenseCandidate[]>([]);
+  // Which research phase of that kind is shown — progress reports run in rounds
+  // (Progress report 1, 2, ...), so their defenses are divided the same way.
+  // null means every round; NO_PHASE means the ones from before the timeline.
+  const [defensePhaseId, setDefensePhaseId] = useState<string | null>(null);
+  const [defenseCandidates, setDefenseCandidates] = useState<
+    DefenseCandidate[]
+  >([]);
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
   const [planTarget, setPlanTarget] = useState<PlanTarget | null>(null);
-  const [planForm, setPlanForm] = useState<{ date: string; time: string; location: string; panelIds: string[] }>({ date: "", time: "", location: "", panelIds: [] });
+  const [planForm, setPlanForm] = useState<{
+    date: string;
+    time: string;
+    location: string;
+    panelIds: string[];
+  }>({ date: "", time: "", location: "", panelIds: [] });
   const [isSavingPlan, setIsSavingPlan] = useState(false);
   const [phaseForm, setPhaseForm] = useState(emptyPhaseForm);
   const [isPhaseFormOpen, setIsPhaseFormOpen] = useState(false);
@@ -434,21 +606,35 @@ function AdminManagement({ role }: { role: AdminRole }) {
   const [isSavingPhase, setIsSavingPhase] = useState(false);
   // Once the admin types their own title, stop replacing it with a suggestion.
   const [isPhaseLabelCustom, setIsPhaseLabelCustom] = useState(false);
+  // Deleted proposals are left out of the admin's list; this asks for them back.
+  // They were never really removed — the row and its PDF are still on file.
+  const [showDeletedProposals, setShowDeletedProposals] = useState(false);
+  const [phaseActionId, setPhaseActionId] = useState<string | null>(null);
 
   const loadData = async () => {
     setError(null);
     try {
-      const [departmentData, degreeData, clusterData, userData, proposalData, profileData, defenseData, phaseData] =
-        await Promise.all([
-          request<{ departments: Department[] }>(DEPARTMENTS),
-          request<{ degreePrograms: DegreeProgram[] }>(DEGREES),
-          request<{ clusters: Cluster[] }>(CLUSTERS),
-          request<{ users: User[] }>(USERS),
-          request<{ proposals: Proposal[] }>(PROPOSALS),
-          request<{ profiles: Profile[] }>(PROFILES_QUERY),
-          request<{ departmentDefenses: ScheduledDefense[] }>(DEPARTMENT_DEFENSES),
-          request<{ researchPhases: ResearchPhase[] }>(RESEARCH_PHASES_QUERY),
-        ]);
+      const [
+        departmentData,
+        degreeData,
+        clusterData,
+        userData,
+        proposalData,
+        profileData,
+        defenseData,
+        phaseData,
+      ] = await Promise.all([
+        request<{ departments: Department[] }>(DEPARTMENTS),
+        request<{ degreePrograms: DegreeProgram[] }>(DEGREES),
+        request<{ clusters: Cluster[] }>(CLUSTERS),
+        request<{ users: User[] }>(USERS),
+        request<{ proposals: Proposal[] }>(PROPOSALS, { includeDeleted: showDeletedProposals }),
+        request<{ profiles: Profile[] }>(PROFILES_QUERY),
+        request<{ departmentDefenses: ScheduledDefense[] }>(
+          DEPARTMENT_DEFENSES,
+        ),
+        request<{ researchPhases: ResearchPhase[] }>(RESEARCH_PHASES_QUERY),
+      ]);
       setDepartments(departmentData.departments);
       setDegrees(degreeData.degreePrograms);
       setClusters(clusterData.clusters);
@@ -472,17 +658,21 @@ function AdminManagement({ role }: { role: AdminRole }) {
     };
 
     void initializeManagementData();
-  }, []);
+    // Reloads when the admin asks to see deleted proposals, since that changes the query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDeletedProposals]);
   const departmentName = (id: string) =>
     departments.find((item) => item.id === id)?.name ?? "Unknown department";
   // Keep cluster rows grouped by department and predictable within each group.
   const sortedClusters = [...clusters].sort((firstCluster, secondCluster) => {
-    const departmentOrder = departmentName(firstCluster.departmentId).localeCompare(
-      departmentName(secondCluster.departmentId),
-      undefined,
-      { sensitivity: "base" },
+    const departmentOrder = departmentName(
+      firstCluster.departmentId,
+    ).localeCompare(departmentName(secondCluster.departmentId), undefined, {
+      sensitivity: "base",
+    });
+    return (
+      departmentOrder || firstCluster.name.localeCompare(secondCluster.name)
     );
-    return departmentOrder || firstCluster.name.localeCompare(secondCluster.name);
   });
   const professors = users.filter(
     (user) => user.role.toLowerCase().replace(/^.*\./, "") === "professor",
@@ -493,7 +683,10 @@ function AdminManagement({ role }: { role: AdminRole }) {
   // A professor's total supervised students across all their assigned proposals, optionally
   // ignoring one proposal's own load (so editing that proposal's assignment doesn't count it twice).
   // Students on a proposal: the owner plus accepted group members.
-  const proposalSize = (proposal: Proposal) => 1 + proposal.groupMembers.filter((member) => member.status === "accepted").length;
+  const proposalSize = (proposal: Proposal) =>
+    1 +
+    proposal.groupMembers.filter((member) => member.status === "accepted")
+      .length;
   // A professor's active supervision load, optionally ignoring the proposal being (re)assigned.
   const activeSupervised = (professorId: string, excludeProposalId?: string) =>
     proposals.filter(
@@ -504,45 +697,143 @@ function AdminManagement({ role }: { role: AdminRole }) {
         !proposal.deletedAt,
     );
   const professorLoad = (professorId: string, excludeProposalId?: string) =>
-    activeSupervised(professorId, excludeProposalId).reduce((total, proposal) => total + proposalSize(proposal), 0);
+    activeSupervised(professorId, excludeProposalId).reduce(
+      (total, proposal) => total + proposalSize(proposal),
+      0,
+    );
   const professorCapacity = (professorId: string) =>
-    profiles.find((profile) => profile.userId === professorId)?.maxStudents ?? null;
+    profiles.find((profile) => profile.userId === professorId)?.maxStudents ??
+    null;
   // Why a professor can't take this proposal, or null. Same limits as backend/app/constraints.py.
-  const supervisionBlock = (professorId: string, proposal: Proposal | null): string | null => {
+  const supervisionBlock = (
+    professorId: string,
+    proposal: Proposal | null,
+  ): string | null => {
     if (!proposal) return null;
     const active = activeSupervised(professorId, proposal.id);
     const size = proposalSize(proposal);
-    const atLevel = active.filter((item) => item.degreeLevel === proposal.degreeLevel);
-    const studentsAtLevel = atLevel.reduce((total, item) => total + proposalSize(item), 0);
-    if (proposal.degreeLevel === "bachelors" && atLevel.length >= SUPERVISION_LIMITS.bachelorsGroups) return "already supervising a Bachelor's group";
-    if (proposal.degreeLevel === "masters" && studentsAtLevel + size > SUPERVISION_LIMITS.mastersStudents) return `already supervising ${SUPERVISION_LIMITS.mastersStudents} Master's students`;
-    if (proposal.degreeLevel === "phd" && studentsAtLevel + size > SUPERVISION_LIMITS.phdStudents) return `already supervising ${SUPERVISION_LIMITS.phdStudents} PhD students`;
+    // A proposal with no degree level on file can't be placed at a level, so only the
+    // overall caps below apply to it — same as the backend's own check.
+    const level = proposal.degreeLevel;
+    if (level) {
+      const atLevel = active.filter((item) => item.degreeLevel === level);
+      if (atLevel.length >= SUPERVISION_LIMITS.projectsPerLevel)
+        return `already supervising a ${degreeLevelLabel(level)} ${level === "bachelors" ? "group" : "project"}`;
+    }
     const load = professorLoad(professorId, proposal.id);
-    if (load + size > SUPERVISION_LIMITS.totalStudents) return `already supervising ${SUPERVISION_LIMITS.totalStudents} students`;
+    if (load + size > SUPERVISION_LIMITS.totalStudents)
+      return `already supervising ${SUPERVISION_LIMITS.totalStudents} students`;
     const capacity = professorCapacity(professorId);
-    if (capacity !== null && load + size > capacity) return `at their limit of ${capacity} students`;
+    if (capacity !== null && load + size > capacity)
+      return `at their limit of ${capacity} students`;
     return null;
   };
+  // Assignment cue for the proposal table: green once a supervisor is on the proposal, red while
+  // it still needs one. Deleted proposals stay neutral — nobody is waiting on an assignment for them.
+  const assignmentTone = (proposal: Proposal) => {
+    if (proposal.deletedAt) return { row: "", cell: "text-slate-500" };
+    return proposal.supervisorId
+      ? { row: "bg-emerald-50", cell: "text-emerald-700" }
+      : { row: "bg-red-50", cell: "text-red-700" };
+  };
   const awaitingAssignment = (level: string) =>
-    proposals.filter((proposal) => proposal.degreeLevel === level && !proposal.supervisorId && !proposal.deletedAt && proposal.status === "submitted").length;
-  const selectedProposal = proposals.find((proposal) => proposal.id === assignmentForm.proposalId) ?? null;
+    proposals.filter(
+      (proposal) =>
+        proposal.degreeLevel === level &&
+        !proposal.supervisorId &&
+        !proposal.deletedAt &&
+        proposal.status === "submitted",
+    ).length;
+  const selectedProposal =
+    proposals.find((proposal) => proposal.id === assignmentForm.proposalId) ??
+    null;
   const levelPhases = researchPhases
     .filter((phase) => phase.degreeLevel === lifecycleLevel)
     .sort((first, second) => first.sequenceNumber - second.sequenceNumber);
-  const levelProposals = proposals.filter((proposal) => proposal.degreeLevel === lifecycleLevel);
-  const levelDefenses = scheduledDefenses.filter((defense) => defense.degreeLevel === lifecycleLevel);
-  const kindDefenses = levelDefenses.filter((defense) => defense.kind === defenseKind);
+  const levelProposals = proposals.filter(
+    (proposal) => proposal.degreeLevel === lifecycleLevel,
+  );
+  const levelDefenses = scheduledDefenses.filter(
+    (defense) => defense.degreeLevel === lifecycleLevel,
+  );
+  const allKindDefenses = levelDefenses.filter(
+    (defense) => defense.kind === defenseKind,
+  );
+  // The rounds this kind runs in: one research phase per round is what makes
+  // "Progress report 1" and "Progress report 2" separate defenses. Numbered from
+  // the phase's own sequence number, because two phases may share a label.
+  const kindPhases = levelPhases.filter(
+    (phase) => phase.phaseType === defenseKind,
+  );
+  const phaseChoices: { id: string; tab: string; full: string }[] =
+    kindPhases.map((phase) => ({
+      id: phase.id,
+      tab: `Phase ${phase.sequenceNumber}`,
+      full: `Phase ${phase.sequenceNumber} · ${phase.label}`,
+    }));
+  // A phase can be soft-deleted after its reports were submitted, and it then drops
+  // out of researchPhases. Without this its reports would sit in no round at all.
+  for (const item of [...allKindDefenses, ...defenseCandidates]) {
+    if (
+      item.phaseId &&
+      !phaseChoices.some((choice) => choice.id === item.phaseId)
+    ) {
+      const label = item.phaseLabel ?? "Removed phase";
+      phaseChoices.push({
+        id: item.phaseId,
+        tab: label,
+        full: `${label} (removed from the timeline)`,
+      });
+    }
+  }
+  // Items from before the research timeline carry no phase, so they need a round of their own.
+  if (
+    allKindDefenses.some((defense) => !defense.phaseId) ||
+    defenseCandidates.some((candidate) => !candidate.phaseId)
+  ) {
+    phaseChoices.push({ id: NO_PHASE, tab: "No phase", full: "No phase" });
+  }
+  const inSelectedPhase = (item: { phaseId: string | null }) =>
+    defensePhaseId === null ||
+    (defensePhaseId === NO_PHASE
+      ? !item.phaseId
+      : item.phaseId === defensePhaseId);
+  const kindDefenses = allKindDefenses.filter(inSelectedPhase);
+  const visibleCandidates = defenseCandidates.filter(inSelectedPhase);
+  const selectedPhaseLabel =
+    phaseChoices.find((choice) => choice.id === defensePhaseId)?.full ?? null;
   // Only professors with a professor profile can sit on a panel.
   const panelChoices = profiles
     .filter((profile) => profile.role.toLowerCase() === "professor")
     .sort((first, second) => first.userName.localeCompare(second.userName));
   const selectedProposalLevel = selectedProposal?.degreeLevel ?? null;
+  // The chosen professor is never greyed out in the list (it has to stay selectable), so
+  // spell out the rule they break here instead — the same sentence the backend refuses with.
+  const selectedSupervisorBlock = (() => {
+    const supervisor = professors.find(
+      (item) => item.id === assignmentForm.supervisorId,
+    );
+    if (!supervisor || !selectedProposal) return null;
+    const reason = supervisionBlock(supervisor.id, selectedProposal);
+    return reason
+      ? `${supervisor.name} is ${reason} — this assignment will be refused.`
+      : null;
+  })();
   // Students already owning or belonging to a different active proposal's group can't be picked
   // again; a rejected or deleted proposal frees its students.
   const committedElsewhereIds = new Set(
     proposals
-      .filter((proposal) => proposal.id !== selectedProposal?.id && proposal.status !== "rejected" && proposal.status !== "withdrawn" && !proposal.deletedAt)
-      .flatMap((proposal) => [proposal.submittedBy, ...proposal.groupMembers.map((member) => member.id)])
+      .filter(
+        (proposal) =>
+          proposal.id !== selectedProposal?.id &&
+          proposal.status !== "rejected" &&
+          proposal.status !== "withdrawn" &&
+          !proposal.deletedAt,
+      )
+      .flatMap((proposal) => [
+        proposal.submittedBy,
+        ...proposal.groupMembers.map((member) => member.id),
+      ])
       .filter((id): id is string => Boolean(id)),
   );
   const editable = (type: "department" | "degree" | "cluster", id: string) =>
@@ -563,7 +854,9 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setMessage("Department saved.");
       await loadData();
     } catch (e) {
-      setDepartmentFormError(e instanceof Error ? e.message : "Unable to save department.");
+      setDepartmentFormError(
+        e instanceof Error ? e.message : "Unable to save department.",
+      );
     }
   };
   const closeDepartmentForm = () => {
@@ -607,7 +900,9 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setMessage("Cluster saved.");
       await loadData();
     } catch (e) {
-      setClusterFormError(e instanceof Error ? e.message : "Unable to save cluster.");
+      setClusterFormError(
+        e instanceof Error ? e.message : "Unable to save cluster.",
+      );
     }
   };
   const deleteItem = async (
@@ -632,17 +927,29 @@ function AdminManagement({ role }: { role: AdminRole }) {
     setIsLoadingCandidates(true);
     setDefenseError(null);
     try {
-      const result = await request<{ defenseCandidates: DefenseCandidate[] }>(DEFENSE_CANDIDATES_QUERY, { degreeLevel: level, kind });
+      const result = await request<{ defenseCandidates: DefenseCandidate[] }>(
+        DEFENSE_CANDIDATES_QUERY,
+        { degreeLevel: level, kind },
+      );
       setDefenseCandidates(result.defenseCandidates);
     } catch (requestError) {
-      setDefenseError(requestError instanceof Error ? requestError.message : "Unable to load what can be defended.");
+      setDefenseError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to load what can be defended.",
+      );
     } finally {
       setIsLoadingCandidates(false);
     }
   };
 
-  const showDefenses = (level: string, kind: DefenseKind) => {
+  const showDefenses = (
+    level: string,
+    kind: DefenseKind,
+    phaseId: string | null = null,
+  ) => {
     setDefenseKind(kind);
+    setDefensePhaseId(phaseId);
     setDefenseCandidates([]);
     void loadDefenseCandidates(level, kind);
   };
@@ -671,7 +978,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
   const savePlan = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!planTarget) return;
-    const targetKey = planTarget.kind === "proposal" ? "proposalId" : planTarget.kind === "progress_report" ? "progressReportId" : "paperId";
+    const targetKey =
+      planTarget.kind === "proposal"
+        ? "proposalId"
+        : planTarget.kind === "progress_report"
+          ? "progressReportId"
+          : "paperId";
     setIsSavingPlan(true);
     setDefenseError(null);
     try {
@@ -686,19 +998,65 @@ function AdminManagement({ role }: { role: AdminRole }) {
           panelProfessorIds: planForm.panelIds,
         },
       });
-      setMessage(`Defense ${planTarget.existing ? "rescheduled" : "planned"} for "${planTarget.title}". The students, supervisor and panel were notified.`);
+      setMessage(
+        `Defense ${planTarget.existing ? "rescheduled" : "planned"} for "${planTarget.title}". The students, supervisor and panel were notified.`,
+      );
       setPlanTarget(null);
       await loadData();
       await loadDefenseCandidates(lifecycleLevel, defenseKind);
     } catch (requestError) {
-      setDefenseError(requestError instanceof Error ? requestError.message : "Unable to plan the defense.");
+      setDefenseError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to plan the defense.",
+      );
     } finally {
       setIsSavingPlan(false);
     }
   };
 
+  const setPhaseOpen = async (phase: ResearchPhase, open: boolean) => {
+    if (
+      !open &&
+      !window.confirm(
+        `Close "${phase.label}"? Students can no longer submit into it, everything already submitted stays reviewable, and the next phase for this degree level can then be started.`,
+      )
+    )
+      return;
+    setError(null);
+    setMessage(null);
+    setPhaseActionId(phase.id);
+    try {
+      const result = await request<{
+        openResearchPhase?: { notifiedCount: number | null };
+      }>(open ? OPEN_RESEARCH_PHASE : CLOSE_RESEARCH_PHASE, {
+        adminInput: { id: phase.id },
+      });
+      const notified = result.openResearchPhase?.notifiedCount ?? null;
+      setMessage(
+        open
+          ? `"${phase.label}" is open${notified ? ` — ${notified} ${notified === 1 ? "person was" : "people were"} notified` : ""}.`
+          : `"${phase.label}" is closed. The next phase for this degree level can now be started.`,
+      );
+      await loadData();
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : `Unable to ${open ? "open" : "close"} the phase.`,
+      );
+    } finally {
+      setPhaseActionId(null);
+    }
+  };
+
   const deletePhase = async (phase: ResearchPhase) => {
-    if (!window.confirm(`Delete "${phase.label}" from the timeline? Its submissions, history and defenses stay on record, but the phase no longer appears in any dashboard.`)) return;
+    if (
+      !window.confirm(
+        `Delete "${phase.label}" from the timeline? Its submissions, history and defenses stay on record, but the phase no longer appears in any dashboard.`,
+      )
+    )
+      return;
     setError(null);
     setMessage(null);
     try {
@@ -706,27 +1064,52 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setMessage(`"${phase.label}" was removed from the timeline.`);
       await loadData();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to delete the research phase.");
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to delete the research phase.",
+      );
     }
   };
 
   // Next free step number for the level, plus a title like "Progress report 3".
   const suggestPhase = (phaseType: string, degreeLevel: string) => {
-    const levelPhases = researchPhases.filter((phase) => phase.degreeLevel === degreeLevel);
-    const nextSequence = levelPhases.reduce((highest, phase) => Math.max(highest, phase.sequenceNumber), 0) + 1;
-    const round = levelPhases.filter((phase) => phase.phaseType === phaseType).length + 1;
-    const baseLabel = phaseType === "proposal" ? "Proposal submission" : phaseTypeLabel(phaseType);
-    const label = phaseType === "progress_report" || round > 1 ? `${baseLabel} ${round}` : baseLabel;
+    const levelPhases = researchPhases.filter(
+      (phase) => phase.degreeLevel === degreeLevel,
+    );
+    const nextSequence =
+      levelPhases.reduce(
+        (highest, phase) => Math.max(highest, phase.sequenceNumber),
+        0,
+      ) + 1;
+    const round =
+      levelPhases.filter((phase) => phase.phaseType === phaseType).length + 1;
+    const baseLabel =
+      phaseType === "proposal"
+        ? "Proposal submission"
+        : phaseTypeLabel(phaseType);
+    const label =
+      phaseType === "progress_report" || round > 1
+        ? `${baseLabel} ${round}`
+        : baseLabel;
     return { sequenceNumber: String(nextSequence), label };
   };
 
   const openNewPhaseForm = (degreeLevel = "bachelors") => {
-    const hasProposalPhase = researchPhases.some((phase) => phase.degreeLevel === degreeLevel && phase.phaseType === "proposal");
+    const hasProposalPhase = researchPhases.some(
+      (phase) =>
+        phase.degreeLevel === degreeLevel && phase.phaseType === "proposal",
+    );
     const phaseType = hasProposalPhase ? "progress_report" : "proposal";
     setEditingPhaseId(null);
     setIsPhaseLabelCustom(false);
     setPhaseFormError(null);
-    setPhaseForm({ ...emptyPhaseForm, phaseType, degreeLevel, ...suggestPhase(phaseType, degreeLevel) });
+    setPhaseForm({
+      ...emptyPhaseForm,
+      phaseType,
+      degreeLevel,
+      ...suggestPhase(phaseType, degreeLevel),
+    });
     setIsPhaseFormOpen(true);
   };
 
@@ -754,17 +1137,28 @@ function AdminManagement({ role }: { role: AdminRole }) {
   };
 
   // Stage and degree level can only change while creating; the suggestions follow them.
-  const changePhaseKind = (changes: { phaseType?: string; degreeLevel?: string }) => {
+  const changePhaseKind = (changes: {
+    phaseType?: string;
+    degreeLevel?: string;
+  }) => {
     const next = { ...phaseForm, ...changes };
     const suggestion = suggestPhase(next.phaseType, next.degreeLevel);
-    setPhaseForm({ ...next, sequenceNumber: suggestion.sequenceNumber, label: isPhaseLabelCustom ? next.label : suggestion.label });
+    setPhaseForm({
+      ...next,
+      sequenceNumber: suggestion.sequenceNumber,
+      label: isPhaseLabelCustom ? next.label : suggestion.label,
+    });
   };
 
   const savePhase = async (event: React.FormEvent) => {
     event.preventDefault();
     setPhaseFormError(null);
     const isDefense = phaseForm.phaseType === "defense";
-    if (!isDefense && new Date(phaseForm.opensAt).getTime() >= new Date(phaseForm.deadlineAt).getTime()) {
+    if (
+      !isDefense &&
+      new Date(phaseForm.opensAt).getTime() >=
+        new Date(phaseForm.deadlineAt).getTime()
+    ) {
       setPhaseFormError("The deadline must be later than the opening time.");
       return;
     }
@@ -772,33 +1166,54 @@ function AdminManagement({ role }: { role: AdminRole }) {
       label: phaseForm.label.trim(),
       sequenceNumber: Number(phaseForm.sequenceNumber),
       opensAt: isDefense ? null : new Date(phaseForm.opensAt).toISOString(),
-      deadlineAt: isDefense ? null : new Date(phaseForm.deadlineAt).toISOString(),
+      deadlineAt: isDefense
+        ? null
+        : new Date(phaseForm.deadlineAt).toISOString(),
       // Local midnight, so the defense day doesn't shift a day in timezones behind UTC.
-      defenseDate: isDefense ? new Date(`${phaseForm.defenseDate}T00:00`).toISOString() : null,
+      defenseDate: isDefense
+        ? new Date(`${phaseForm.defenseDate}T00:00`).toISOString()
+        : null,
       gracePeriodEnabled: isDefense ? false : phaseForm.gracePeriodEnabled,
     };
     setIsSavingPhase(true);
     try {
       let notifiedCount: number | null;
       if (editingPhaseId) {
-        const result = await request<{ updateResearchPhase: { notifiedCount: number | null } }>(UPDATE_RESEARCH_PHASE, {
+        const result = await request<{
+          updateResearchPhase: { notifiedCount: number | null };
+        }>(UPDATE_RESEARCH_PHASE, {
           adminInput: { id: editingPhaseId, ...schedule },
         });
         notifiedCount = result.updateResearchPhase.notifiedCount;
       } else {
-        const result = await request<{ createResearchPhase: { notifiedCount: number | null } }>(CREATE_RESEARCH_PHASE, {
-          adminInput: { phaseType: phaseForm.phaseType, degreeLevel: phaseForm.degreeLevel, ...schedule },
+        const result = await request<{
+          createResearchPhase: { notifiedCount: number | null };
+        }>(CREATE_RESEARCH_PHASE, {
+          adminInput: {
+            phaseType: phaseForm.phaseType,
+            degreeLevel: phaseForm.degreeLevel,
+            ...schedule,
+          },
         });
         notifiedCount = result.createResearchPhase.notifiedCount;
       }
+      // A new phase is only drafted, so nobody hears about it until it is opened.
       const audience = notifiedCount
         ? `${notifiedCount} ${notifiedCount === 1 ? "person was" : "people were"} notified.`
-        : "No students or professors match this degree level yet, so nobody was notified.";
-      setMessage(`${editingPhaseId ? "Research phase updated" : "Research phase added to the timeline"}. ${audience}`);
+        : editingPhaseId
+          ? "Nobody was notified — a phase only announces itself once it is open."
+          : "Open it when the previous phase for this degree level has closed.";
+      setMessage(
+        `${editingPhaseId ? "Research phase updated" : "Research phase added to the timeline"}. ${audience}`,
+      );
       closePhaseForm();
       await loadData();
     } catch (requestError) {
-      setPhaseFormError(requestError instanceof Error ? requestError.message : "Unable to save the research phase.");
+      setPhaseFormError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to save the research phase.",
+      );
     } finally {
       setIsSavingPhase(false);
     }
@@ -822,33 +1237,47 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setIsProposalFormOpen(false);
       await loadData();
     } catch (e) {
-      setProposalFormError(e instanceof Error ? e.message : "Unable to assign proposal.");
+      setProposalFormError(
+        e instanceof Error ? e.message : "Unable to assign proposal.",
+      );
     }
   };
 
-  const adjustProposalMember = async (proposal: Proposal, studentId: string, add: boolean) => {
+  const adjustProposalMember = async (
+    proposal: Proposal,
+    studentId: string,
+    add: boolean,
+  ) => {
     setProposalFormError(null);
     try {
-      await request(add ? ADD_PROPOSAL_MEMBER_AS_ADMIN : DELETE_PROPOSAL_MEMBER_AS_ADMIN, {
-        studentInput: { proposalId: proposal.id, studentId },
-      });
+      await request(
+        add ? ADD_PROPOSAL_MEMBER_AS_ADMIN : DELETE_PROPOSAL_MEMBER_AS_ADMIN,
+        {
+          studentInput: { proposalId: proposal.id, studentId },
+        },
+      );
       setGroupStudentId("");
       await loadData();
     } catch (requestError) {
-      setProposalFormError(requestError instanceof Error ? requestError.message : "Unable to update proposal group.");
+      setProposalFormError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to update proposal group.",
+      );
     }
   };
 
-  const tabs: [Tab, string][] = role === "super_admin"
-    ? [["departments", "Departments"]]
-    : [
-        ["degrees", "Degree programs"],
-        ["clusters", "Clusters"],
-        ["lifecycle", "Research timeline & defenses"],
-      ];
+  const tabs: [Tab, string][] =
+    role === "super_admin"
+      ? [["departments", "Departments"]]
+      : [
+          ["degrees", "Degree programs"],
+          ["clusters", "Clusters"],
+          ["lifecycle", "Research timeline & defenses"],
+        ];
   return (
     <div className="min-h-full p-6">
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-4">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-4">
         {tabs.map(([value, label]) => (
           <button
             key={value}
@@ -863,6 +1292,11 @@ function AdminManagement({ role }: { role: AdminRole }) {
             {label}
           </button>
         ))}
+        {/* Admins get the same bell as the other roles — it's where an assignment that
+            breaks a supervision rule is reported to them. */}
+        <div className="ml-auto">
+          <NotificationBell />
+        </div>
       </div>
       {message && (
         <p className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
@@ -954,8 +1388,16 @@ function AdminManagement({ role }: { role: AdminRole }) {
                           title={`Delete ${item.name}`}
                           aria-label={`Delete ${item.name}`}
                           onClick={() => {
-                            if (window.confirm(`Delete department "${item.name}"?`)) {
-                              void deleteItem(DELETE_DEPARTMENT, item.id, "Department");
+                            if (
+                              window.confirm(
+                                `Delete department "${item.name}"?`,
+                              )
+                            ) {
+                              void deleteItem(
+                                DELETE_DEPARTMENT,
+                                item.id,
+                                "Department",
+                              );
                             }
                           }}
                           className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700"
@@ -1094,7 +1536,11 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     aria-label="Close degree program form"
                     onClick={() => {
                       setEditing(null);
-                      setDegreeForm({ name: "", level: "bachelors", departmentId: "" });
+                      setDegreeForm({
+                        name: "",
+                        level: "bachelors",
+                        departmentId: "",
+                      });
                       setIsDegreeFormOpen(false);
                       setDegreeFormError(null);
                     }}
@@ -1109,7 +1555,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     <input
                       required
                       value={degreeForm.name}
-                      onChange={(event) => setDegreeForm({ ...degreeForm, name: event.target.value })}
+                      onChange={(event) =>
+                        setDegreeForm({
+                          ...degreeForm,
+                          name: event.target.value,
+                        })
+                      }
                       className={inputClass}
                     />
                   </label>
@@ -1118,7 +1569,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     <select
                       required
                       value={degreeForm.level}
-                      onChange={(event) => setDegreeForm({ ...degreeForm, level: event.target.value })}
+                      onChange={(event) =>
+                        setDegreeForm({
+                          ...degreeForm,
+                          level: event.target.value,
+                        })
+                      }
                       className={inputClass}
                     >
                       <option value="bachelors">Bachelor's</option>
@@ -1131,20 +1587,37 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     <select
                       required
                       value={degreeForm.departmentId}
-                      onChange={(event) => setDegreeForm({ ...degreeForm, departmentId: event.target.value })}
+                      onChange={(event) =>
+                        setDegreeForm({
+                          ...degreeForm,
+                          departmentId: event.target.value,
+                        })
+                      }
                       className={inputClass}
                     >
                       <option value="">Select department</option>
-                      {departments.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      {departments.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
                     </select>
                   </label>
-                  {degreeFormError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{degreeFormError}</p>}
+                  {degreeFormError && (
+                    <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                      {degreeFormError}
+                    </p>
+                  )}
                   <div className="flex justify-end gap-3 pt-2">
                     <button
                       type="button"
                       onClick={() => {
                         setEditing(null);
-                        setDegreeForm({ name: "", level: "bachelors", departmentId: "" });
+                        setDegreeForm({
+                          name: "",
+                          level: "bachelors",
+                          departmentId: "",
+                        });
                         setIsDegreeFormOpen(false);
                         setDegreeFormError(null);
                       }}
@@ -1152,8 +1625,13 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     >
                       Cancel
                     </button>
-                    <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700">
-                      {editing?.type === "degree" ? "Save changes" : "Create degree program"}
+                    <button
+                      type="submit"
+                      className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      {editing?.type === "degree"
+                        ? "Save changes"
+                        : "Create degree program"}
                     </button>
                   </div>
                 </form>
@@ -1338,7 +1816,11 @@ function AdminManagement({ role }: { role: AdminRole }) {
                       ))}
                     </select>
                   </label>
-                  {clusterFormError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{clusterFormError}</p>}
+                  {clusterFormError && (
+                    <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                      {clusterFormError}
+                    </p>
+                  )}
                   <div className="flex justify-end gap-3 pt-2">
                     <button
                       type="button"
@@ -1370,8 +1852,14 @@ function AdminManagement({ role }: { role: AdminRole }) {
       )}
       {tab === "lifecycle" && (
         <section className="mt-6">
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2" role="tablist" aria-label="Degree level">
-            <span className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Degree level</span>
+          <div
+            className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2"
+            role="tablist"
+            aria-label="Degree level"
+          >
+            <span className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Degree level
+            </span>
             {DEGREE_LEVELS.map((level) => (
               <button
                 key={level.value}
@@ -1382,7 +1870,8 @@ function AdminManagement({ role }: { role: AdminRole }) {
                   setLifecycleLevel(level.value);
                   setError(null);
                   setMessage(null);
-                  if (lifecycleSection === "defenses") showDefenses(level.value, defenseKind);
+                  if (lifecycleSection === "defenses")
+                    showDefenses(level.value, defenseKind);
                 }}
                 className={`rounded-lg px-4 py-2 text-sm font-semibold ${lifecycleLevel === level.value ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
               >
@@ -1398,12 +1887,18 @@ function AdminManagement({ role }: { role: AdminRole }) {
               </button>
             ))}
           </div>
-          <div className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Research lifecycle">
-            {([
-              ["timeline", "Research timeline"],
-              ["proposals", "Proposal assignment"],
-              ["defenses", "Defenses"],
-            ] as [LifecycleSection, string][]).map(([value, label]) => (
+          <div
+            className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
+            role="tablist"
+            aria-label="Research lifecycle"
+          >
+            {(
+              [
+                ["timeline", "Research timeline"],
+                ["proposals", "Proposal assignment"],
+                ["defenses", "Defenses"],
+              ] as [LifecycleSection, string][]
+            ).map(([value, label]) => (
               <button
                 key={value}
                 type="button"
@@ -1413,7 +1908,8 @@ function AdminManagement({ role }: { role: AdminRole }) {
                   setLifecycleSection(value);
                   setError(null);
                   setMessage(null);
-                  if (value === "defenses") showDefenses(lifecycleLevel, defenseKind);
+                  if (value === "defenses")
+                    showDefenses(lifecycleLevel, defenseKind);
                 }}
                 className={`rounded-lg px-3 py-1.5 text-sm font-medium ${lifecycleSection === value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
               >
@@ -1423,427 +1919,648 @@ function AdminManagement({ role }: { role: AdminRole }) {
           </div>
           {lifecycleSection === "timeline" && (
             <>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
-            <div>
-              <h2 className="text-lg font-medium text-slate-800">{degreeLevelLabel(lifecycleLevel)} research timeline</h2>
-              <p className="text-sm text-slate-500">
-                Schedule the proposal, progress report and final defense phases. The students and professors involved are notified automatically. Phases can be deleted once they've ended.
-              </p>
-            </div>
-            <button type="button" onClick={() => openNewPhaseForm(lifecycleLevel)} className={buttonClass}>
-              <Plus size={16} aria-hidden="true" />
-              Add research phase
-            </button>
-          </div>
-          {levelPhases.length === 0 ? (
-            <div className="mt-4 rounded-xl border border-dashed border-slate-300 p-6 text-center">
-              <p className="text-sm font-medium text-slate-700">No {degreeLevelLabel(lifecycleLevel)} research phases scheduled yet</p>
-              <p className="mt-1 text-sm text-slate-500">Start with a proposal phase, then add a progress report phase for each review round and a final defense.</p>
-            </div>
-          ) : (
-            <div className="mt-4">
-              {[lifecycleLevel].map((levelValue) => (
-                <div key={levelValue} className="rounded-xl border border-slate-200 p-4">
-                  <ol className="space-y-4 border-l-2 border-slate-200 pl-5">
-                    {levelPhases
-                      .map((phase) => {
-                        const status = phaseStatus(phase);
-                        return (
-                          <li key={phase.id} className="relative">
-                            <span className="absolute -left-[33px] top-0 flex size-6 items-center justify-center rounded-full border-2 border-white bg-blue-600 text-[11px] font-semibold text-white">
-                              {phase.sequenceNumber}
-                            </span>
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-medium text-slate-800">{phase.label}</p>
-                                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">{phaseTypeLabel(phase.phaseType)}</span>
-                                  <span className={`rounded-full px-2 py-0.5 font-medium ${status.className}`}>{status.label}</span>
-                                </p>
-                                <p className="mt-1.5 text-xs text-slate-500">
-                                  {phase.phaseType === "defense"
-                                    ? `Defense day: ${phase.defenseDate ? new Date(phase.defenseDate).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not set"}`
-                                    : `${phase.opensAt ? formatPhaseDateTime(phase.opensAt) : "?"} → deadline ${phase.deadlineAt ? formatPhaseDateTime(phase.deadlineAt) : "?"}`}
-                                </p>
-                              </div>
-                              <span className="flex shrink-0">
-                                <button
-                                  type="button"
-                                  title={`Edit ${phase.label}`}
-                                  aria-label={`Edit ${phase.label}`}
-                                  onClick={() => openEditPhaseForm(phase)}
-                                  className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                                >
-                                  <Pencil size={17} aria-hidden="true" />
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={!phase.hasEnded}
-                                  title={phase.hasEnded ? `Delete ${phase.label}` : phase.phaseType === "defense" ? "Can be deleted after the defense day" : "Can be deleted after the deadline"}
-                                  aria-label={`Delete ${phase.label}`}
-                                  onClick={() => void deletePhase(phase)}
-                                  className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
-                                >
-                                  <Trash2 size={17} aria-hidden="true" />
-                                </button>
-                              </span>
-                            </div>
-                          </li>
-                        );
-                      })}
-                  </ol>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
+                <div>
+                  <h2 className="text-lg font-medium text-slate-800">
+                    {degreeLevelLabel(lifecycleLevel)} research timeline
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    Schedule the proposal, progress report and final defense
+                    phases. The students and professors involved are notified
+                    automatically. Phases can be deleted once they've ended.
+                  </p>
                 </div>
-              ))}
-            </div>
-          )}
+                <button
+                  type="button"
+                  onClick={() => openNewPhaseForm(lifecycleLevel)}
+                  className={buttonClass}
+                >
+                  <Plus size={16} aria-hidden="true" />
+                  Add research phase
+                </button>
+              </div>
+              {levelPhases.length === 0 ? (
+                <div className="mt-4 rounded-xl border border-dashed border-slate-300 p-6 text-center">
+                  <p className="text-sm font-medium text-slate-700">
+                    No {degreeLevelLabel(lifecycleLevel)} research phases
+                    scheduled yet
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Start with a proposal phase, then add a progress report
+                    phase for each review round and a final defense.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-4">
+                  {[lifecycleLevel].map((levelValue) => (
+                    <div
+                      key={levelValue}
+                      className="rounded-xl border border-slate-200 p-4"
+                    >
+                      <ol className="space-y-4 border-l-2 border-slate-200 pl-5">
+                        {levelPhases.map((phase) => {
+                          const status = phaseStatus(phase);
+                          return (
+                            <li key={phase.id} className="relative">
+                              <span className="absolute -left-[33px] top-0 flex size-6 items-center justify-center rounded-full border-2 border-white bg-blue-600 text-[11px] font-semibold text-white">
+                                {phase.sequenceNumber}
+                              </span>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="font-medium text-slate-800">
+                                    {phase.label}
+                                  </p>
+                                  <p className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+                                      {phaseTypeLabel(phase.phaseType)}
+                                    </span>
+                                    <span
+                                      className={`rounded-full px-2 py-0.5 font-medium ${status.className}`}
+                                    >
+                                      {status.label}
+                                    </span>
+                                  </p>
+                                  <p className="mt-1.5 text-xs text-slate-500">
+                                    {phase.phaseType === "defense"
+                                      ? `Defense day: ${phase.defenseDate ? new Date(phase.defenseDate).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not set"}`
+                                      : `${phase.opensAt ? formatPhaseDateTime(phase.opensAt) : "?"} → deadline ${phase.deadlineAt ? formatPhaseDateTime(phase.deadlineAt) : "?"}`}
+                                    {phase.closedAt
+                                      ? ` · closed ${formatPhaseDateTime(phase.closedAt)}`
+                                      : ""}
+                                  </p>
+                                </div>
+                                <span className="flex shrink-0 items-center gap-1">
+                                  <button
+                                    type="button"
+                                    disabled={phaseActionId === phase.id}
+                                    title={
+                                      phase.status === "open"
+                                        ? `Close ${phase.label} so the next phase can start`
+                                        : `Start ${phase.label} — only possible once every earlier phase for this degree level has closed`
+                                    }
+                                    onClick={() =>
+                                      void setPhaseOpen(
+                                        phase,
+                                        phase.status !== "open",
+                                      )
+                                    }
+                                    className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                                      phase.status === "open"
+                                        ? "border-slate-300 text-slate-700 hover:bg-slate-100"
+                                        : "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                                    }`}
+                                  >
+                                    {phase.status === "open"
+                                      ? "Close"
+                                      : phase.status === "closed"
+                                        ? "Reopen"
+                                        : "Open"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={phase.status === "closed"}
+                                    title={
+                                      phase.status === "closed"
+                                        ? "Reopen the phase to change its schedule"
+                                        : `Edit ${phase.label}`
+                                    }
+                                    aria-label={`Edit ${phase.label}`}
+                                    onClick={() => openEditPhaseForm(phase)}
+                                    className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Pencil size={17} aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!phase.hasEnded}
+                                    title={
+                                      phase.hasEnded
+                                        ? `Delete ${phase.label}`
+                                        : phase.phaseType === "defense"
+                                          ? "Can be deleted after the defense day"
+                                          : "Can be deleted after the deadline"
+                                    }
+                                    aria-label={`Delete ${phase.label}`}
+                                    onClick={() => void deletePhase(phase)}
+                                    className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+                                  >
+                                    <Trash2 size={17} aria-hidden="true" />
+                                  </button>
+                                </span>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
           {lifecycleSection === "proposals" && (
             <>
-          <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
-            <div>
-              <h2 className="text-lg font-medium text-slate-800">{degreeLevelLabel(lifecycleLevel)} proposal assignment</h2>
-              <p className="text-sm text-slate-500">Assign submitted {degreeLevelLabel(lifecycleLevel)} proposals to a supervising professor and, optionally, a cluster.</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setAssignmentForm({ proposalId: "", supervisorId: "", clusterId: "" });
-                setEditingProposalId(null);
-                setIsProposalFormOpen(true);
-                setProposalFormError(null);
-              }}
-              className={buttonClass}
-            >
-              <Plus size={16} aria-hidden="true" />
-              Assign proposal
-            </button>
-          </div>
-          {isProposalFormOpen && (
-            /* Assignment fields keep the selected proposal and reviewers together in one dialog. */
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
-              <div
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="proposal-form-title"
-                className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 id="proposal-form-title" className="text-xl font-semibold text-slate-900">
-                      {editingProposalId ? "Edit proposal assignment" : "Assign student proposal"}
-                    </h2>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Choose a professor, optionally place the proposal in a cluster, and manage its group members.
-                    </p>
-                  </div>
+              <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
+                <div>
+                  <h2 className="text-lg font-medium text-slate-800">
+                    {degreeLevelLabel(lifecycleLevel)} proposal assignment
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    Assign submitted {degreeLevelLabel(lifecycleLevel)}{" "}
+                    proposals to a supervising professor and, optionally, a
+                    cluster.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  {/* A deleted proposal is only hidden — its row and PDF are still on file. */}
+                  <label className="flex items-center gap-2 text-sm text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={showDeletedProposals}
+                      onChange={(event) =>
+                        setShowDeletedProposals(event.target.checked)
+                      }
+                      className="size-4 rounded border-slate-300"
+                    />
+                    Show deleted
+                  </label>
                   <button
                     type="button"
-                    aria-label="Close proposal assignment form"
-                    title="Close proposal assignment form"
-                    onClick={() => { setIsProposalFormOpen(false); setGroupStudentId(""); setProposalFormError(null); }}
-                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                    onClick={() => {
+                      setAssignmentForm({
+                        proposalId: "",
+                        supervisorId: "",
+                        clusterId: "",
+                      });
+                      setEditingProposalId(null);
+                      setIsProposalFormOpen(true);
+                      setProposalFormError(null);
+                    }}
+                    className={buttonClass}
                   >
-                    <X size={18} aria-hidden="true" />
+                    <Plus size={16} aria-hidden="true" />
+                    Assign proposal
                   </button>
                 </div>
-                <form onSubmit={assignProposal} className="mt-6 grid gap-4">
-                  <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                    Student proposal
-                    <select
-                      required
-                      value={assignmentForm.proposalId}
-                      onChange={(event) => {
-                        setAssignmentForm({
-                          ...assignmentForm,
-                          proposalId: event.target.value,
-                        });
-                        setGroupStudentId("");
-                      }}
-                      className={inputClass}
-                    >
-                      <option value="">Select student proposal</option>
-                      {levelProposals
-                        .filter(
-                          (proposal) =>
-                            proposal.submittedBy &&
-                            students.some(
-                              (student) => student.id === proposal.submittedBy,
-                            ),
-                        )
-                        .map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.title} ({item.status})
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                  <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                    Professor
-                    <select
-                      required
-                      value={assignmentForm.supervisorId}
-                      onChange={(event) =>
-                        setAssignmentForm({
-                          ...assignmentForm,
-                          supervisorId: event.target.value,
-                        })
-                      }
-                      className={inputClass}
-                    >
-                      <option value="">Select professor</option>
-                      {professors.map((item) => {
-                        const capacity = professorCapacity(item.id);
-                        const load = professorLoad(item.id, selectedProposal?.id ?? undefined);
-                        const blocked = item.id === assignmentForm.supervisorId ? null : supervisionBlock(item.id, selectedProposal);
-                        return (
-                          <option key={item.id} value={item.id} disabled={Boolean(blocked)}>
-                            {item.name} ({load}{capacity !== null ? `/${capacity}` : ""} students){blocked ? ` — ${blocked}` : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    {selectedProposalLevel && (
-                      <span className="text-xs font-normal text-slate-500">
-                        {selectedProposalLevel === "bachelors"
-                          ? "A professor can supervise one Bachelor's group at a time."
-                          : `A professor can supervise up to ${selectedProposalLevel === "masters" ? SUPERVISION_LIMITS.mastersStudents : SUPERVISION_LIMITS.phdStudents} ${degreeLevelLabel(selectedProposalLevel)} students`}
-                        {` and ${SUPERVISION_LIMITS.totalStudents} students overall.`}
-                      </span>
-                    )}
-                  </label>
-                  <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                    Cluster
-                    <select
-                      value={assignmentForm.clusterId}
-                      onChange={(event) =>
-                        setAssignmentForm({
-                          ...assignmentForm,
-                          clusterId: event.target.value,
-                        })
-                      }
-                      className={inputClass}
-                    >
-                      <option value="">Select cluster (optional)</option>
-                      {sortedClusters.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {departmentName(item.departmentId)}: {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {selectedProposal && selectedProposal.degreeLevel !== "bachelors" && (
-                    <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
-                      {degreeLevelLabel(selectedProposal.degreeLevel ?? "")} proposals are individual work, so there are no group members to manage.
-                    </p>
-                  )}
-                  {selectedProposal && selectedProposal.degreeLevel === "bachelors" && (
-                    <div className="grid gap-1.5 text-sm font-medium text-slate-700">
-                      Group members{" "}
-                      <span className="font-normal text-slate-500">
-                        ({selectedProposal.groupMembers.length + 1}/3 students)
-                      </span>
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm font-normal text-slate-700">
-                        <p className="font-medium">{selectedProposal.submittedByName ?? "Proposal owner"} (owner)</p>
-                        {selectedProposal.groupMembers.map((member) => (
-                          <div key={member.id} className="mt-2 flex items-center justify-between">
-                            <span>{member.name}</span>
-                            <button
-                              type="button"
-                              onClick={() => void adjustProposalMember(selectedProposal, member.id, false)}
-                              className="text-sm text-red-600 hover:text-red-700"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-1 flex gap-2 font-normal">
-                        <select
-                          value={groupStudentId}
-                          onChange={(event) => setGroupStudentId(event.target.value)}
-                          className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              </div>
+              {isProposalFormOpen && (
+                /* Assignment fields keep the selected proposal and reviewers together in one dialog. */
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="proposal-form-title"
+                    className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h2
+                          id="proposal-form-title"
+                          className="text-xl font-semibold text-slate-900"
                         >
-                          <option value="">Select department student</option>
-                          {students
+                          {editingProposalId
+                            ? "Edit proposal assignment"
+                            : "Assign student proposal"}
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Choose a professor, optionally place the proposal in a
+                          cluster, and manage its group members.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Close proposal assignment form"
+                        title="Close proposal assignment form"
+                        onClick={() => {
+                          setIsProposalFormOpen(false);
+                          setGroupStudentId("");
+                          setProposalFormError(null);
+                        }}
+                        className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                      >
+                        <X size={18} aria-hidden="true" />
+                      </button>
+                    </div>
+                    <form onSubmit={assignProposal} className="mt-6 grid gap-4">
+                      <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                        Student proposal
+                        <select
+                          required
+                          value={assignmentForm.proposalId}
+                          onChange={(event) => {
+                            setAssignmentForm({
+                              ...assignmentForm,
+                              proposalId: event.target.value,
+                            });
+                            setGroupStudentId("");
+                          }}
+                          className={inputClass}
+                        >
+                          <option value="">Select student proposal</option>
+                          {levelProposals
                             .filter(
-                              (student) =>
-                                student.id !== selectedProposal.submittedBy &&
-                                !selectedProposal.groupMembers.some((member) => member.id === student.id) &&
-                                !committedElsewhereIds.has(student.id),
+                              (proposal) =>
+                                proposal.submittedBy &&
+                                students.some(
+                                  (student) =>
+                                    student.id === proposal.submittedBy,
+                                ),
                             )
-                            .map((student) => (
-                              <option key={student.id} value={student.id}>
-                                {student.name}
+                            .map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.title} ({item.status})
                               </option>
                             ))}
                         </select>
+                      </label>
+                      <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                        Professor
+                        <select
+                          required
+                          value={assignmentForm.supervisorId}
+                          onChange={(event) =>
+                            setAssignmentForm({
+                              ...assignmentForm,
+                              supervisorId: event.target.value,
+                            })
+                          }
+                          className={inputClass}
+                        >
+                          <option value="">Select professor</option>
+                          {professors.map((item) => {
+                            const capacity = professorCapacity(item.id);
+                            const load = professorLoad(
+                              item.id,
+                              selectedProposal?.id ?? undefined,
+                            );
+                            const blocked =
+                              item.id === assignmentForm.supervisorId
+                                ? null
+                                : supervisionBlock(item.id, selectedProposal);
+                            return (
+                              <option
+                                key={item.id}
+                                value={item.id}
+                                disabled={Boolean(blocked)}
+                              >
+                                {item.name} ({load}
+                                {capacity !== null ? `/${capacity}` : ""}{" "}
+                                students){blocked ? ` — ${blocked}` : ""}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        {selectedSupervisorBlock && (
+                          <span className="text-xs font-normal text-red-600">
+                            {selectedSupervisorBlock}
+                          </span>
+                        )}
+                        {selectedProposalLevel && (
+                          <span className="text-xs font-normal text-slate-500">
+                            {selectedProposalLevel === "bachelors"
+                              ? "A professor can supervise one Bachelor's group at a time"
+                              : `A professor can supervise one ${degreeLevelLabel(selectedProposalLevel)} project at a time`}
+                            {`, and ${SUPERVISION_LIMITS.totalStudents} students overall.`}
+                          </span>
+                        )}
+                      </label>
+                      <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                        Cluster
+                        <select
+                          value={assignmentForm.clusterId}
+                          onChange={(event) =>
+                            setAssignmentForm({
+                              ...assignmentForm,
+                              clusterId: event.target.value,
+                            })
+                          }
+                          className={inputClass}
+                        >
+                          <option value="">Select cluster (optional)</option>
+                          {sortedClusters.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {departmentName(item.departmentId)}: {item.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedProposal &&
+                        selectedProposal.degreeLevel !== "bachelors" && (
+                          <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+                            {degreeLevelLabel(
+                              selectedProposal.degreeLevel ?? "",
+                            )}{" "}
+                            proposals are individual work, so there are no group
+                            members to manage.
+                          </p>
+                        )}
+                      {selectedProposal &&
+                        selectedProposal.degreeLevel === "bachelors" && (
+                          <div className="grid gap-1.5 text-sm font-medium text-slate-700">
+                            Group members{" "}
+                            <span className="font-normal text-slate-500">
+                              ({selectedProposal.groupMembers.length + 1}/3
+                              students)
+                            </span>
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm font-normal text-slate-700">
+                              <p className="font-medium">
+                                {selectedProposal.submittedByName ??
+                                  "Proposal owner"}{" "}
+                                (owner)
+                              </p>
+                              {selectedProposal.groupMembers.map((member) => (
+                                <div
+                                  key={member.id}
+                                  className="mt-2 flex items-center justify-between"
+                                >
+                                  <span>{member.name}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void adjustProposalMember(
+                                        selectedProposal,
+                                        member.id,
+                                        false,
+                                      )
+                                    }
+                                    className="text-sm text-red-600 hover:text-red-700"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-1 flex gap-2 font-normal">
+                              <select
+                                value={groupStudentId}
+                                onChange={(event) =>
+                                  setGroupStudentId(event.target.value)
+                                }
+                                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                              >
+                                <option value="">
+                                  Select department student
+                                </option>
+                                {students
+                                  .filter(
+                                    (student) =>
+                                      student.id !==
+                                        selectedProposal.submittedBy &&
+                                      !selectedProposal.groupMembers.some(
+                                        (member) => member.id === student.id,
+                                      ) &&
+                                      !committedElsewhereIds.has(student.id),
+                                  )
+                                  .map((student) => (
+                                    <option key={student.id} value={student.id}>
+                                      {student.name}
+                                    </option>
+                                  ))}
+                              </select>
+                              <button
+                                type="button"
+                                disabled={
+                                  !groupStudentId ||
+                                  selectedProposal.groupMembers.length >= 2
+                                }
+                                onClick={() =>
+                                  void adjustProposalMember(
+                                    selectedProposal,
+                                    groupStudentId,
+                                    true,
+                                  )
+                                }
+                                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                              >
+                                Add
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      {proposalFormError && (
+                        <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                          {proposalFormError}
+                        </p>
+                      )}
+                      <div className="flex justify-end gap-3 pt-2">
                         <button
                           type="button"
-                          disabled={!groupStudentId || selectedProposal.groupMembers.length >= 2}
-                          onClick={() => void adjustProposalMember(selectedProposal, groupStudentId, true)}
-                          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                          onClick={() => {
+                            setEditingProposalId(null);
+                            setIsProposalFormOpen(false);
+                            setGroupStudentId("");
+                            setProposalFormError(null);
+                          }}
+                          className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
                         >
-                          Add
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
+                        >
+                          <Plus size={16} aria-hidden="true" />
+                          Assign proposal
                         </button>
                       </div>
-                    </div>
-                  )}
-                  {proposalFormError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{proposalFormError}</p>}
-                  <div className="flex justify-end gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingProposalId(null);
-                        setIsProposalFormOpen(false);
-                        setGroupStudentId("");
-                        setProposalFormError(null);
-                      }}
-                      className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-                    >
-                      <Plus size={16} aria-hidden="true" />
-                      Assign proposal
-                    </button>
+                    </form>
                   </div>
-                </form>
-              </div>
-            </div>
-          )}
-          <div className="mt-6 overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3">Proposal</th>
-                  <th className="px-4 py-3">Student</th>
-                  <th className="px-4 py-3">Group</th>
-                  <th className="px-4 py-3">Assigned professor</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {levelProposals.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                      No {degreeLevelLabel(lifecycleLevel)} proposals found.
-                    </td>
-                  </tr>
-                ) : (
-                  levelProposals.map((proposal) => (
-                    <tr key={proposal.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-medium text-slate-800">{proposal.title}</td>
-                      <td className="px-4 py-3 text-slate-600">{proposal.submittedByName ?? "Unknown student"}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {proposal.degreeLevel === "bachelors" ? (
-                          <>
-                            {proposal.groupMembers.length + 1}/3
-                            {proposal.groupMembers.length > 0 && ` · ${proposal.groupMembers.map((member) => member.name).join(", ")}`}
-                          </>
-                        ) : (
-                          "Individual"
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">{proposal.supervisorName ?? "Unassigned"}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusStyles[proposal.status] ?? "bg-slate-100 text-slate-600"}`}>
-                          {formatStatus(proposal.status)}
-                        </span>
-                        {proposal.deletedAt && (
-                          <span className="ml-1 inline-block rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600">Deleted</span>
-                        )}
-                        {proposal.reviewComment && (
-                          <p className="mt-1 max-w-[16rem] text-xs text-slate-500">
-                            {proposal.reviewedByName ? `${proposal.reviewedByName}: ` : ""}"{proposal.reviewComment}"
-                          </p>
-                        )}
-                        {proposal.deletedAt && (
-                          <p className="mt-1 max-w-[16rem] text-xs text-slate-400">
-                            Deleted by {proposal.deletedByName ?? "an admin"} on {new Date(proposal.deletedAt).toLocaleDateString()}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {proposal.originalFilename && (
-                          <>
-                            <button
-                              type="button"
-                              title="View proposal document"
-                              aria-label={`View document for ${proposal.title}`}
-                              onClick={() => void viewProposalFile(proposal.id).catch((viewError: unknown) => setError(viewError instanceof Error ? viewError.message : "Unable to open the document."))}
-                              className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                            >
-                              <Eye size={17} aria-hidden="true" />
-                            </button>
-                            <button
-                              type="button"
-                              title="Download proposal document"
-                              aria-label={`Download document for ${proposal.title}`}
-                              onClick={() => void downloadProposalFile(proposal.id, proposal.originalFilename ?? "proposal.pdf").catch((downloadError: unknown) => setError(downloadError instanceof Error ? downloadError.message : "Unable to download the document."))}
-                              className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                            >
-                              <Download size={17} aria-hidden="true" />
-                            </button>
-                          </>
-                        )}
-                        {!proposal.deletedAt && (
-                          <button
-                            type="button"
-                            title={`Edit assignment for ${proposal.title}`}
-                            aria-label={`Edit assignment for ${proposal.title}`}
-                            onClick={() => {
-                              setEditingProposalId(proposal.id);
-                              setAssignmentForm({
-                                proposalId: proposal.id,
-                                supervisorId: proposal.supervisorId ?? "",
-                                clusterId: proposal.clusterId ?? "",
-                              });
-                              setIsProposalFormOpen(true);
-                              setProposalFormError(null);
-                            }}
-                            className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                          >
-                            <Pencil size={17} aria-hidden="true" />
-                          </button>
-                        )}
-                        {proposal.status === "rejected" && !proposal.deletedAt && (
-                          <button
-                            type="button"
-                            title={`Delete rejected proposal "${proposal.title}"`}
-                            aria-label={`Delete rejected proposal "${proposal.title}"`}
-                            onClick={() => {
-                              if (window.confirm(`Delete rejected proposal "${proposal.title}"? It will remain visible in history for the student and professor.`)) {
-                                void deleteItem(DELETE_PROPOSAL_AS_ADMIN, proposal.id, "Proposal");
-                              }
-                            }}
-                            className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700"
-                          >
-                            <Trash2 size={17} aria-hidden="true" />
-                          </button>
-                        )}
-                      </td>
+                </div>
+              )}
+              <div className="mt-6 overflow-x-auto">
+                <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+                      <th className="px-4 py-3">Proposal</th>
+                      <th className="px-4 py-3">Student</th>
+                      <th className="px-4 py-3">Group</th>
+                      <th className="px-4 py-3">Assigned professor</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3 text-right">Actions</th>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody>
+                    {levelProposals.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-8 text-center text-slate-500"
+                        >
+                          No {degreeLevelLabel(lifecycleLevel)} proposals found.
+                        </td>
+                      </tr>
+                    ) : (
+                      levelProposals.map((proposal) => (
+                        <tr
+                          key={proposal.id}
+                          className={`border-b border-slate-100 ${assignmentTone(proposal).row}`}
+                        >
+                          <td className="px-4 py-3 font-medium text-slate-800">
+                            {proposal.title}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            {proposal.submittedByName ?? "Unknown student"}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            {proposal.degreeLevel === "bachelors" ? (
+                              <>
+                                {proposal.groupMembers.length + 1}/3
+                                {proposal.groupMembers.length > 0 &&
+                                  ` · ${proposal.groupMembers.map((member) => member.name).join(", ")}`}
+                              </>
+                            ) : (
+                              "Individual"
+                            )}
+                          </td>
+                          <td
+                            className={`px-4 py-3 font-medium ${assignmentTone(proposal).cell}`}
+                          >
+                            {proposal.supervisorName ?? "Unassigned"}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            {/* ring keeps the pill readable as a pill against the row's green/red assignment tint */}
+                            <span
+                              className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ring-inset ring-black/5 ${statusStyles[proposal.status] ?? "bg-slate-100 text-slate-600"}`}
+                            >
+                              {formatStatus(proposal.status)}
+                            </span>
+                            {proposal.deletedAt && (
+                              <span className="ml-1 inline-block rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600">
+                                Deleted
+                              </span>
+                            )}
+                            {proposal.reviewComment && (
+                              <p className="mt-1 max-w-[16rem] text-xs text-slate-500">
+                                {proposal.reviewedByName
+                                  ? `${proposal.reviewedByName}: `
+                                  : ""}
+                                "{proposal.reviewComment}"
+                              </p>
+                            )}
+                            {proposal.deletedAt && (
+                              <p className="mt-1 max-w-[16rem] text-xs text-slate-400">
+                                Deleted by{" "}
+                                {proposal.deletedByName ?? "an admin"} on{" "}
+                                {new Date(
+                                  proposal.deletedAt,
+                                ).toLocaleDateString()}
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {proposal.originalFilename && (
+                              <>
+                                <button
+                                  type="button"
+                                  title="View proposal document"
+                                  aria-label={`View document for ${proposal.title}`}
+                                  onClick={() =>
+                                    void viewProposalFile(proposal.id).catch(
+                                      (viewError: unknown) =>
+                                        setError(
+                                          viewError instanceof Error
+                                            ? viewError.message
+                                            : "Unable to open the document.",
+                                        ),
+                                    )
+                                  }
+                                  className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
+                                >
+                                  <Eye size={17} aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Download proposal document"
+                                  aria-label={`Download document for ${proposal.title}`}
+                                  onClick={() =>
+                                    void downloadProposalFile(
+                                      proposal.id,
+                                      proposal.originalFilename ??
+                                        "proposal.pdf",
+                                    ).catch((downloadError: unknown) =>
+                                      setError(
+                                        downloadError instanceof Error
+                                          ? downloadError.message
+                                          : "Unable to download the document.",
+                                      ),
+                                    )
+                                  }
+                                  className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
+                                >
+                                  <Download size={17} aria-hidden="true" />
+                                </button>
+                              </>
+                            )}
+                            {!proposal.deletedAt && (
+                              <button
+                                type="button"
+                                title={`Edit assignment for ${proposal.title}`}
+                                aria-label={`Edit assignment for ${proposal.title}`}
+                                onClick={() => {
+                                  setEditingProposalId(proposal.id);
+                                  setAssignmentForm({
+                                    proposalId: proposal.id,
+                                    supervisorId: proposal.supervisorId ?? "",
+                                    clusterId: proposal.clusterId ?? "",
+                                  });
+                                  setIsProposalFormOpen(true);
+                                  setProposalFormError(null);
+                                }}
+                                className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
+                              >
+                                <Pencil size={17} aria-hidden="true" />
+                              </button>
+                            )}
+                            {proposal.status === "rejected" &&
+                              !proposal.deletedAt && (
+                                <button
+                                  type="button"
+                                  title={`Delete rejected proposal "${proposal.title}"`}
+                                  aria-label={`Delete rejected proposal "${proposal.title}"`}
+                                  onClick={() => {
+                                    if (
+                                      window.confirm(
+                                        `Delete rejected proposal "${proposal.title}"? It will remain visible in history for the student and professor.`,
+                                      )
+                                    ) {
+                                      void deleteItem(
+                                        DELETE_PROPOSAL_AS_ADMIN,
+                                        proposal.id,
+                                        "Proposal",
+                                      );
+                                    }
+                                  }}
+                                  className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700"
+                                >
+                                  <Trash2 size={17} aria-hidden="true" />
+                                </button>
+                              )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
           {lifecycleSection === "defenses" && (
             <>
               <div className="border-b border-slate-200 px-0 py-4">
-                <h2 className="text-lg font-medium text-slate-800">{degreeLevelLabel(lifecycleLevel)} defenses</h2>
+                <h2 className="text-lg font-medium text-slate-800">
+                  {degreeLevelLabel(lifecycleLevel)} defenses
+                </h2>
                 <p className="text-sm text-slate-500">
-                  Every proposal, progress report and approved final report can be defended. Plan when and where, choose the panel, and the students, supervisor and panel are notified.
+                  Every proposal, progress report and approved final report can
+                  be defended. Plan when and where, choose the panel, and the
+                  students, supervisor and panel are notified.
                 </p>
               </div>
-              <div className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Report type">
+              <div
+                className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
+                role="tablist"
+                aria-label="Report type"
+              >
                 {DEFENSE_KINDS.map((kind) => (
                   <button
                     key={kind.value}
@@ -1854,51 +2571,154 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     className={`rounded-lg px-3 py-1.5 text-sm font-medium ${defenseKind === kind.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
                   >
                     {kind.label}
-                    <span className="ml-1 text-xs text-slate-400">{levelDefenses.filter((defense) => defense.kind === kind.value && defense.currentStatus !== "rejected").length}</span>
+                    <span className="ml-1 text-xs text-slate-400">
+                      {
+                        levelDefenses.filter(
+                          (defense) => defense.kind === kind.value,
+                        ).length
+                      }
+                    </span>
                   </button>
                 ))}
               </div>
-              {defenseError && !planTarget && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{defenseError}</p>}
+              {/* Progress reports run in rounds, so their defenses divide into the same
+                  phases. A kind with a single round has nothing to divide. */}
+              {phaseChoices.length > 1 && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Phase
+                  </span>
+                  <div
+                    className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
+                    role="tablist"
+                    aria-label="Research phase"
+                  >
+                    {[
+                      {
+                        id: null as string | null,
+                        tab: "All phases",
+                        full: "All phases",
+                      },
+                      ...phaseChoices,
+                    ].map((choice) => {
+                      const count = allKindDefenses.filter(
+                        (defense) =>
+                          choice.id === null ||
+                          (choice.id === NO_PHASE
+                            ? !defense.phaseId
+                            : defense.phaseId === choice.id),
+                      ).length;
+                      return (
+                        <button
+                          key={choice.id ?? "all"}
+                          type="button"
+                          role="tab"
+                          title={choice.full}
+                          aria-selected={defensePhaseId === choice.id}
+                          onClick={() => setDefensePhaseId(choice.id)}
+                          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${defensePhaseId === choice.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
+                        >
+                          {choice.tab}
+                          <span className="ml-1 text-xs text-slate-400">
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {defenseError && !planTarget && (
+                <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {defenseError}
+                </p>
+              )}
 
-              <h3 className="mt-6 text-sm font-semibold text-slate-800">{defenseReportLabel(defenseKind)}s to defend</h3>
+              <h3 className="mt-6 text-sm font-semibold text-slate-800">
+                {defenseReportLabel(defenseKind)}s to defend
+                {selectedPhaseLabel ? ` · ${selectedPhaseLabel}` : ""}
+              </h3>
               <div className="mt-2 rounded-xl border border-slate-200">
                 {isLoadingCandidates ? (
                   <p className="p-4 text-sm text-slate-500">Loading...</p>
-                ) : defenseCandidates.length === 0 ? (
+                ) : visibleCandidates.length === 0 ? (
                   <p className="p-4 text-sm text-slate-500">
-                    {defenseKind === "defense"
-                      ? `No ${degreeLevelLabel(lifecycleLevel)} paper has an approved final report yet.`
-                      : `No ${degreeLevelLabel(lifecycleLevel)} ${defenseReportLabel(defenseKind).toLowerCase()} has been submitted yet.`}
+                    {selectedPhaseLabel
+                      ? `No ${degreeLevelLabel(lifecycleLevel)} ${defenseReportLabel(defenseKind).toLowerCase()} belongs to ${selectedPhaseLabel}.`
+                      : defenseKind === "defense"
+                        ? `No ${degreeLevelLabel(lifecycleLevel)} paper has an approved final report yet.`
+                        : `No ${degreeLevelLabel(lifecycleLevel)} ${defenseReportLabel(defenseKind).toLowerCase()} has been submitted yet.`}
                   </p>
                 ) : (
                   <ul className="divide-y divide-slate-100">
-                    {defenseCandidates.map((candidate) => (
-                      <li key={candidate.targetId} className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+                    {visibleCandidates.map((candidate) => (
+                      <li
+                        key={candidate.targetId}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm"
+                      >
                         <div className="min-w-0">
-                          <p className="font-medium text-slate-800">{candidate.title}</p>
-                          <p className="text-xs text-slate-500">
-                            {defenseReportLabel(candidate.kind)}{candidate.phaseLabel ? ` · ${candidate.phaseLabel}` : ""} · {candidate.studentNames.join(", ") || "No students"} · Supervisor: {candidate.supervisorName ?? "not assigned"} · <span className="capitalize">{formatStatus(candidate.status)}</span>
+                          <p className="font-medium text-slate-800">
+                            {candidate.title}
                           </p>
-                          <p className={`mt-1 text-xs font-medium ${candidate.defense ? "text-emerald-700" : "text-slate-400"}`}>
+                          <p className="text-xs text-slate-500">
+                            {defenseReportLabel(candidate.kind)}
+                            {candidate.phaseLabel
+                              ? ` · ${candidate.phaseLabel}`
+                              : ""}{" "}
+                            ·{" "}
+                            {candidate.studentNames.join(", ") || "No students"}{" "}
+                            · Supervisor:{" "}
+                            {candidate.supervisorName ?? "not assigned"} ·{" "}
+                            <span className="capitalize">
+                              {formatStatus(candidate.status)}
+                            </span>
+                          </p>
+                          <p
+                            className={`mt-1 text-xs font-medium ${candidate.defense ? "text-slate-600" : "text-slate-400"}`}
+                          >
                             {candidate.defense
-                              ? `Defense: ${describeDefenseSlot(candidate.defense)} · Panel: ${candidate.defense.panelNames.join(", ") || "none"}`
+                              ? `Defense: ${describeDefenseSlot(candidate.defense)} · Panel: ${candidate.defense.panelNames.join(", ") || "none"} · ${DEFENSE_TONE_LABELS[defenseTone(candidate.defense)]}`
                               : "No defense planned"}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => openPlanForm({ kind: candidate.kind, targetId: candidate.targetId, title: candidate.title, phaseId: candidate.phaseId, suggestedDate: candidate.suggestedDate, supervisorName: candidate.supervisorName, existing: candidate.defense })}
-                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-                        >
-                          {candidate.defense ? "Reschedule" : "Plan defense"}
-                        </button>
+                        {/* The panel decides a heard defense on its own, so there is
+                            nothing for the admin to record — only the wait to show. */}
+                        {candidate.defense?.hasEnded ? (
+                          <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600">
+                            {candidate.defense.currentStatus === "pending"
+                              ? "Awaiting panel verdicts"
+                              : DEFENSE_TONE_LABELS[defenseTone(candidate.defense)]}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openPlanForm({
+                                kind: candidate.kind,
+                                targetId: candidate.targetId,
+                                title: candidate.title,
+                                phaseId: candidate.phaseId,
+                                suggestedDate: candidate.suggestedDate,
+                                supervisorName: candidate.supervisorName,
+                                existing: candidate.defense,
+                              })
+                            }
+                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                          >
+                            {candidate.defense ? "Reschedule" : "Plan defense"}
+                          </button>
+                        )}
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
 
-              <h3 className="mt-8 text-sm font-semibold text-slate-800">Planned {degreeLevelLabel(lifecycleLevel)} {defenseKindLabel(defenseKind).toLowerCase()}s</h3>
+              <h3 className="mt-8 text-sm font-semibold text-slate-800">
+                Planned {degreeLevelLabel(lifecycleLevel)}{" "}
+                {defenseKindLabel(defenseKind).toLowerCase()}s
+                {selectedPhaseLabel ? ` · ${selectedPhaseLabel}` : ""}
+              </h3>
               <div className="overflow-x-auto pt-2">
                 <table className="w-full min-w-[980px] border-collapse text-left text-sm">
                   <thead>
@@ -1916,36 +2736,110 @@ function AdminManagement({ role }: { role: AdminRole }) {
                   <tbody>
                     {kindDefenses.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="px-4 py-8 text-center text-slate-500">Nothing planned yet.</td>
+                        <td
+                          colSpan={8}
+                          className="px-4 py-8 text-center text-slate-500"
+                        >
+                          {selectedPhaseLabel
+                            ? `Nothing planned for ${selectedPhaseLabel} yet.`
+                            : "Nothing planned yet."}
+                        </td>
                       </tr>
                     ) : (
                       kindDefenses.map((defense) => {
-                        const targetId = defense.proposalId ?? defense.progressReportId ?? defense.paperId;
+                        const targetId =
+                          defense.proposalId ??
+                          defense.progressReportId ??
+                          defense.paperId;
+                        const tone = defenseTone(defense);
                         return (
-                          <tr key={defense.id} className="border-b border-slate-100 align-top">
+                          <tr
+                            key={defense.id}
+                            className={`border-b border-slate-100 align-top ${DEFENSE_TONE_STYLES[tone].row}`}
+                          >
                             <td className="px-4 py-3">
-                              <p className="font-medium text-slate-800">{defense.paperTitle ?? "Untitled research"}</p>
-                              <p className="text-xs text-slate-500">{defenseReportLabel(defense.kind)}{defense.phaseLabel ? ` · ${defense.phaseLabel}` : ""}</p>
+                              <p className="font-medium text-slate-800">
+                                {defense.paperTitle ?? "Untitled research"}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {defenseReportLabel(defense.kind)}
+                                {defense.phaseLabel
+                                  ? ` · ${defense.phaseLabel}`
+                                  : ""}
+                              </p>
                             </td>
-                            <td className="px-4 py-3 text-slate-600">{defense.studentNames.join(", ") || "—"}</td>
-                            <td className="px-4 py-3 whitespace-nowrap text-slate-800">{new Date(defense.defenseDate).toLocaleDateString(undefined, { weekday: "short", dateStyle: "medium" })}</td>
-                            <td className="px-4 py-3 whitespace-nowrap text-slate-800">{defense.scheduledTime?.slice(0, 5) ?? "—"}</td>
-                            <td className="px-4 py-3 text-slate-600">{defense.location ?? "Not set"}</td>
-                            <td className="px-4 py-3 text-slate-600">{defense.panelNames.join(", ") || "No panel yet"}</td>
+                            <td className="px-4 py-3 text-slate-600">
+                              {defense.studentNames.join(", ") || "—"}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-slate-800">
+                              {formatDefenseDate(defense.defenseDate)}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-slate-800">
+                              {defense.scheduledTime?.slice(0, 5) ?? "—"}
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">
+                              {defense.location ?? "Not set"}
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">
+                              {defense.panelNames.join(", ") || "No panel yet"}
+                            </td>
                             <td className="px-4 py-3">
-                              <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusStyles[defense.currentStatus] ?? "bg-slate-100 text-slate-600"}`}>{formatStatus(defense.currentStatus)}</span>
-                              {defense.kind === "defense" && <p className="mt-1 text-xs text-slate-500">{defense.submissionConfirmed ? "Thesis submitted" : "Awaiting thesis"}</p>}
+                              <span
+                                className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${DEFENSE_TONE_STYLES[tone].badge}`}
+                              >
+                                {DEFENSE_TONE_LABELS[tone]}
+                              </span>
+                              {defense.kind === "defense" &&
+                                defense.currentStatus === "pending" && (
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    {defense.submissionConfirmed
+                                      ? "Thesis submitted"
+                                      : "Awaiting thesis"}
+                                  </p>
+                                )}
+                              {defense.requiresRedefense && (
+                                <p className="mt-1 text-xs font-medium text-amber-800">
+                                  Has to defend again
+                                </p>
+                              )}
+                              {defense.outcomeComments && (
+                                <p className="mt-1 max-w-[16rem] whitespace-pre-line text-xs text-slate-600">
+                                  "{defense.outcomeComments}"
+                                </p>
+                              )}
                             </td>
                             <td className="px-4 py-3 text-right">
-                              {targetId && defense.currentStatus === "pending" && (
-                                <button
-                                  type="button"
-                                  onClick={() => openPlanForm({ kind: defense.kind, targetId, title: defense.paperTitle ?? "this report", phaseId: defense.phaseId, suggestedDate: null, supervisorName: defense.supervisorName, existing: defense })}
-                                  className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
-                                >
-                                  Edit
-                                </button>
-                              )}
+                              <div className="inline-flex flex-wrap justify-end gap-2">
+                                {targetId &&
+                                  defense.currentStatus === "pending" &&
+                                  !defense.hasEnded && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        openPlanForm({
+                                          kind: defense.kind,
+                                          targetId,
+                                          title:
+                                            defense.paperTitle ?? "this report",
+                                          phaseId: defense.phaseId,
+                                          suggestedDate: null,
+                                          supervisorName:
+                                            defense.supervisorName,
+                                          existing: defense,
+                                        })
+                                      }
+                                      className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
+                                    >
+                                      Edit
+                                    </button>
+                                  )}
+                                {/* The panel's own majority settles a heard defense. */}
+                                {defense.hasEnded && defense.currentStatus === "pending" && (
+                                  <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600">
+                                    Awaiting panel verdicts
+                                  </span>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1960,13 +2854,26 @@ function AdminManagement({ role }: { role: AdminRole }) {
       )}
       {planTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
-          <div role="dialog" aria-modal="true" className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl"
+          >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-xl font-semibold text-slate-900">{planTarget.existing ? "Reschedule defense" : "Plan defense"}</h2>
-                <p className="mt-1 text-sm text-slate-500">{defenseKindLabel(planTarget.kind)} · {planTarget.title}</p>
+                <h2 className="text-xl font-semibold text-slate-900">
+                  {planTarget.existing ? "Reschedule defense" : "Plan defense"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {defenseKindLabel(planTarget.kind)} · {planTarget.title}
+                </p>
               </div>
-              <button type="button" aria-label="Close defense form" onClick={() => setPlanTarget(null)} className="flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800">
+              <button
+                type="button"
+                aria-label="Close defense form"
+                onClick={() => setPlanTarget(null)}
+                className="flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              >
                 <X size={18} aria-hidden="true" />
               </button>
             </div>
@@ -1974,52 +2881,125 @@ function AdminManagement({ role }: { role: AdminRole }) {
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block text-sm font-medium text-slate-700">
                   Date
-                  <input required type="date" value={planForm.date} onChange={(event) => setPlanForm({ ...planForm, date: event.target.value })} className={inputClass} />
+                  <input
+                    required
+                    type="date"
+                    value={planForm.date}
+                    onChange={(event) =>
+                      setPlanForm({ ...planForm, date: event.target.value })
+                    }
+                    className={inputClass}
+                  />
                   {planTarget.suggestedDate && !planTarget.existing && (
-                    <span className="mt-1 block text-xs font-normal text-slate-500">Pre-filled with the final defense day from the timeline.</span>
+                    <span className="mt-1 block text-xs font-normal text-slate-500">
+                      Pre-filled with the final defense day from the timeline.
+                    </span>
                   )}
                 </label>
                 <label className="block text-sm font-medium text-slate-700">
                   Time
-                  <input required type="time" value={planForm.time} onChange={(event) => setPlanForm({ ...planForm, time: event.target.value })} className={inputClass} />
+                  <input
+                    required
+                    type="time"
+                    value={planForm.time}
+                    onChange={(event) =>
+                      setPlanForm({ ...planForm, time: event.target.value })
+                    }
+                    className={inputClass}
+                  />
                 </label>
               </div>
               <label className="block text-sm font-medium text-slate-700">
                 Location
-                <input required value={planForm.location} onChange={(event) => setPlanForm({ ...planForm, location: event.target.value })} placeholder="e.g. Seminar hall, Block B" className={inputClass} />
+                <input
+                  required
+                  value={planForm.location}
+                  onChange={(event) =>
+                    setPlanForm({ ...planForm, location: event.target.value })
+                  }
+                  placeholder="e.g. Seminar hall, Block B"
+                  className={inputClass}
+                />
               </label>
               <fieldset>
                 <legend className="text-sm font-medium text-slate-700">
-                  Defense panel <span className="font-normal text-slate-500">({planForm.panelIds.length} selected)</span>
+                  Defense panel{" "}
+                  <span className="font-normal text-slate-500">
+                    ({planForm.panelIds.length} selected)
+                  </span>
                 </legend>
+                {/* The panel decides by majority, so an even one could tie. The
+                    backend refuses it either way — this just says so first. */}
+                {planForm.panelIds.length % 2 === 0 && (
+                  <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    {planForm.panelIds.length === 0
+                      ? "Pick an odd number of professors — the panel decides the outcome by majority."
+                      : "An even panel could tie. Add or remove one member."}
+                  </p>
+                )}
                 {panelChoices.length === 0 ? (
                   <p className="mt-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-                    No professor has a professor profile yet. Create one under Users → Professors → Profiles to add them to panels.
+                    No professor has a professor profile yet. Create one under
+                    Users → Professors → Profiles to add them to panels.
                   </p>
                 ) : (
                   <div className="mt-2 grid max-h-48 gap-1 overflow-y-auto rounded-lg border border-slate-200 p-2 sm:grid-cols-2">
                     {panelChoices.map((professor) => (
-                      <label key={professor.userId} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
-                        <input type="checkbox" checked={planForm.panelIds.includes(professor.userId)} onChange={() => togglePanelMember(professor.userId)} />
+                      <label
+                        key={professor.userId}
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={planForm.panelIds.includes(professor.userId)}
+                          onChange={() => togglePanelMember(professor.userId)}
+                        />
                         <span>
                           {professor.userName}
-                          {professor.userName === planTarget.supervisorName && <span className="ml-1 text-xs text-slate-400">(supervisor)</span>}
+                          {professor.userName === planTarget.supervisorName && (
+                            <span className="ml-1 text-xs text-slate-400">
+                              (supervisor)
+                            </span>
+                          )}
                         </span>
                       </label>
                     ))}
                   </div>
                 )}
-                {professors.length > panelChoices.length && panelChoices.length > 0 && (
-                  <p className="mt-1 text-xs text-slate-500">
-                    {professors.length - panelChoices.length} professor{professors.length - panelChoices.length === 1 ? " isn't" : "s aren't"} listed because they have no professor profile.
-                  </p>
-                )}
+                {professors.length > panelChoices.length &&
+                  panelChoices.length > 0 && (
+                    <p className="mt-1 text-xs text-slate-500">
+                      {professors.length - panelChoices.length} professor
+                      {professors.length - panelChoices.length === 1
+                        ? " isn't"
+                        : "s aren't"}{" "}
+                      listed because they have no professor profile.
+                    </p>
+                  )}
               </fieldset>
-              {defenseError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{defenseError}</p>}
+              {defenseError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {defenseError}
+                </p>
+              )}
               <div className="flex justify-end gap-3 pt-2">
-                <button type="button" onClick={() => setPlanTarget(null)} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Cancel</button>
-                <button type="submit" disabled={isSavingPlan} className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
-                  {isSavingPlan ? "Saving..." : planTarget.existing ? "Reschedule and notify" : "Plan and notify"}
+                <button
+                  type="button"
+                  onClick={() => setPlanTarget(null)}
+                  className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingPlan}
+                  className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {isSavingPlan
+                    ? "Saving..."
+                    : planTarget.existing
+                      ? "Reschedule and notify"
+                      : "Plan and notify"}
                 </button>
               </div>
             </form>
@@ -2031,7 +3011,11 @@ function AdminManagement({ role }: { role: AdminRole }) {
           <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-xl font-semibold text-slate-900">{editingPhaseId ? "Edit research phase" : "Add research phase"}</h2>
+                <h2 className="text-xl font-semibold text-slate-900">
+                  {editingPhaseId
+                    ? "Edit research phase"
+                    : "Add research phase"}
+                </h2>
                 <p className="mt-1 text-sm text-slate-500">
                   {editingPhaseId
                     ? "Students and professors involved will be told that the schedule changed."
@@ -2049,7 +3033,9 @@ function AdminManagement({ role }: { role: AdminRole }) {
             </div>
             <form onSubmit={savePhase} className="mt-6 space-y-4">
               <fieldset disabled={Boolean(editingPhaseId)}>
-                <legend className="text-sm font-medium text-slate-700">Research stage</legend>
+                <legend className="text-sm font-medium text-slate-700">
+                  Research stage
+                </legend>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
                   {PHASE_TYPES.map((type) => (
                     <label
@@ -2061,14 +3047,22 @@ function AdminManagement({ role }: { role: AdminRole }) {
                         name="phaseType"
                         value={type.value}
                         checked={phaseForm.phaseType === type.value}
-                        onChange={() => changePhaseKind({ phaseType: type.value })}
+                        onChange={() =>
+                          changePhaseKind({ phaseType: type.value })
+                        }
                         className="sr-only"
                       />
                       {type.label}
                     </label>
                   ))}
                 </div>
-                <p className="mt-2 text-xs text-slate-500">{PHASE_TYPES.find((type) => type.value === phaseForm.phaseType)?.hint}</p>
+                <p className="mt-2 text-xs text-slate-500">
+                  {
+                    PHASE_TYPES.find(
+                      (type) => type.value === phaseForm.phaseType,
+                    )?.hint
+                  }
+                </p>
               </fieldset>
               <div className="grid gap-4 sm:grid-cols-[1fr_8rem]">
                 <label className="block text-sm font-medium text-slate-700">
@@ -2076,11 +3070,15 @@ function AdminManagement({ role }: { role: AdminRole }) {
                   <select
                     value={phaseForm.degreeLevel}
                     disabled={Boolean(editingPhaseId)}
-                    onChange={(event) => changePhaseKind({ degreeLevel: event.target.value })}
+                    onChange={(event) =>
+                      changePhaseKind({ degreeLevel: event.target.value })
+                    }
                     className={`${inputClass} disabled:bg-slate-100`}
                   >
                     {DEGREE_LEVELS.map((level) => (
-                      <option key={level.value} value={level.value}>{level.label}</option>
+                      <option key={level.value} value={level.value}>
+                        {level.label}
+                      </option>
                     ))}
                   </select>
                 </label>
@@ -2091,7 +3089,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     type="number"
                     min="1"
                     value={phaseForm.sequenceNumber}
-                    onChange={(event) => setPhaseForm({ ...phaseForm, sequenceNumber: event.target.value })}
+                    onChange={(event) =>
+                      setPhaseForm({
+                        ...phaseForm,
+                        sequenceNumber: event.target.value,
+                      })
+                    }
                     className={inputClass}
                   />
                 </label>
@@ -2116,7 +3119,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     required
                     type="date"
                     value={phaseForm.defenseDate}
-                    onChange={(event) => setPhaseForm({ ...phaseForm, defenseDate: event.target.value })}
+                    onChange={(event) =>
+                      setPhaseForm({
+                        ...phaseForm,
+                        defenseDate: event.target.value,
+                      })
+                    }
                     className={inputClass}
                   />
                 </label>
@@ -2129,7 +3137,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
                         required
                         type="datetime-local"
                         value={phaseForm.opensAt}
-                        onChange={(event) => setPhaseForm({ ...phaseForm, opensAt: event.target.value })}
+                        onChange={(event) =>
+                          setPhaseForm({
+                            ...phaseForm,
+                            opensAt: event.target.value,
+                          })
+                        }
                         className={inputClass}
                       />
                     </label>
@@ -2140,7 +3153,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
                         type="datetime-local"
                         min={phaseForm.opensAt || undefined}
                         value={phaseForm.deadlineAt}
-                        onChange={(event) => setPhaseForm({ ...phaseForm, deadlineAt: event.target.value })}
+                        onChange={(event) =>
+                          setPhaseForm({
+                            ...phaseForm,
+                            deadlineAt: event.target.value,
+                          })
+                        }
                         className={inputClass}
                       />
                     </label>
@@ -2149,17 +3167,28 @@ function AdminManagement({ role }: { role: AdminRole }) {
                     <input
                       type="checkbox"
                       checked={phaseForm.gracePeriodEnabled}
-                      onChange={(event) => setPhaseForm({ ...phaseForm, gracePeriodEnabled: event.target.checked })}
+                      onChange={(event) =>
+                        setPhaseForm({
+                          ...phaseForm,
+                          gracePeriodEnabled: event.target.checked,
+                        })
+                      }
                       className="mt-0.5"
                     />
                     <span>
                       Allow late submissions
-                      <span className="block text-xs text-slate-500">Students can still submit after the deadline.</span>
+                      <span className="block text-xs text-slate-500">
+                        Students can still submit after the deadline.
+                      </span>
                     </span>
                   </label>
                 </>
               )}
-              {phaseFormError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{phaseFormError}</p>}
+              {phaseFormError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {phaseFormError}
+                </p>
+              )}
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
@@ -2173,7 +3202,11 @@ function AdminManagement({ role }: { role: AdminRole }) {
                   disabled={isSavingPhase}
                   className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
                 >
-                  {isSavingPhase ? "Saving..." : editingPhaseId ? "Save and notify" : "Add and notify"}
+                  {isSavingPhase
+                    ? "Saving..."
+                    : editingPhaseId
+                      ? "Save and notify"
+                      : "Add and notify"}
                 </button>
               </div>
             </form>
@@ -2234,7 +3267,11 @@ function AdminManagement({ role }: { role: AdminRole }) {
                   className={inputClass}
                 />
               </label>
-              {departmentFormError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{departmentFormError}</p>}
+              {departmentFormError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {departmentFormError}
+                </p>
+              )}
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"

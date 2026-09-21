@@ -4,8 +4,16 @@ import { Eye, EyeOff, Menu, Pencil, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CREATE_USER, UPDATE_USER } from "../mutations/mutations";
-import { CURRENT_USER_QUERY, DEGREE_PROGRAMS_QUERY, DEPARTMENTSQUERY, PROFILES_QUERY, USERSQUERY } from "../queries/queries";
-import ProfileManagement, { type AdminProfile } from "../components/ProfileManagement";
+import {
+  CURRENT_USER_QUERY,
+  DEGREE_PROGRAMS_QUERY,
+  DEPARTMENTSQUERY,
+  PROFILES_QUERY,
+  USERSQUERY,
+} from "../queries/queries";
+import ProfileManagement, {
+  type AdminProfile,
+} from "../components/ProfileManagement";
 import { print } from "graphql";
 import AdminManagement from "./AdminManagement";
 import { resolveAvatarUrl, uploadAvatarImage } from "../utils/uploadAvatar";
@@ -73,7 +81,9 @@ const DEGREE_LEVELS = [
   { value: "masters", label: "Master's" },
   { value: "phd", label: "PhD" },
 ];
-const degreeLevelLabel = (level: string) => DEGREE_LEVELS.find((item) => item.value === level.toLowerCase())?.label ?? level;
+const degreeLevelLabel = (level: string) =>
+  DEGREE_LEVELS.find((item) => item.value === level.toLowerCase())?.label ??
+  level;
 
 interface GraphQLResult<T> {
   data?: T;
@@ -90,7 +100,7 @@ function getAdminRole(): AdminRole {
     : "admin";
 }
 
-const GRAPHQL_ENDPOINT = "http://127.0.0.1:8000/graphql";
+const GRAPHQL_ENDPOINT = import.meta.env.VITE_API_URL
 
 async function requestGraphQL<T>(
   query: typeof USERSQUERY,
@@ -118,7 +128,6 @@ async function requestGraphQL<T>(
   return result.data;
 }
 
-
 // Load and present the administrator's user-management workspace.
 function AdminDashboard() {
   const navigate = useNavigate();
@@ -130,7 +139,9 @@ function AdminDashboard() {
   const [degreePrograms, setDegreePrograms] = useState<DegreeProgram[]>([]);
   const [profiles, setProfiles] = useState<AdminProfile[]>([]);
   // Department admins browse people by role, and students by degree level, as accounts or profiles.
-  const [directoryView, setDirectoryView] = useState<"accounts" | "profiles">("accounts");
+  const [directoryView, setDirectoryView] = useState<"accounts" | "profiles">(
+    "accounts",
+  );
   const [roleGroup, setRoleGroup] = useState<RoleGroup>("students");
   const [studentLevel, setStudentLevel] = useState<StudentLevel>("bachelors");
   const [notice, setNotice] = useState<string | null>(null);
@@ -139,9 +150,9 @@ function AdminDashboard() {
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<"users" | "management" | "profile">(
-    role === "super_admin" ? "management" : "users",
-  );
+  const [activeView, setActiveView] = useState<
+    "users" | "management" | "profile"
+  >(role === "super_admin" ? "management" : "users");
   const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
@@ -168,7 +179,15 @@ function AdminDashboard() {
   });
 
   const openDepartmentAdminForm = () => {
-    setForm({ name: "", email: "", password: "", role: "admin", departmentId: "", degreeLevel: "bachelors", degreeProgramId: "" });
+    setForm({
+      name: "",
+      email: "",
+      password: "",
+      role: "admin",
+      departmentId: "",
+      degreeLevel: "bachelors",
+      degreeProgramId: "",
+    });
     setCreateUserError(null);
     setIsCreateUserOpen(true);
   };
@@ -183,18 +202,27 @@ function AdminDashboard() {
       }
 
       try {
-        const [profileResult, usersResult, departmentsResult, degreeProgramsResult] = await Promise.all([
+        const [
+          profileResult,
+          usersResult,
+          departmentsResult,
+          degreeProgramsResult,
+        ] = await Promise.all([
           requestGraphQL<{ currentUser: Profile }>(CURRENT_USER_QUERY),
           requestGraphQL<{ users: User[] }>(USERSQUERY),
           requestGraphQL<{ departments: Department[] }>(DEPARTMENTSQUERY),
-          requestGraphQL<{ degreePrograms: DegreeProgram[] }>(DEGREE_PROGRAMS_QUERY),
+          requestGraphQL<{ degreePrograms: DegreeProgram[] }>(
+            DEGREE_PROGRAMS_QUERY,
+          ),
         ]);
         setProfile(profileResult.currentUser);
         setUsers(usersResult.users);
         setDepartments(departmentsResult.departments);
         setDegreePrograms(degreeProgramsResult.degreePrograms);
         if (getAdminRole() === "admin") {
-          const profilesResult = await requestGraphQL<{ profiles: AdminProfile[] }>(PROFILES_QUERY);
+          const profilesResult = await requestGraphQL<{
+            profiles: AdminProfile[];
+          }>(PROFILES_QUERY);
           setProfiles(profilesResult.profiles);
         }
       } catch (requestError) {
@@ -213,14 +241,17 @@ function AdminDashboard() {
     (user) =>
       role === "super_admin" ||
       !profile ||
-      Boolean(profile?.departmentId) && user.departmentId === profile.departmentId,
+      (Boolean(profile?.departmentId) &&
+        user.departmentId === profile.departmentId),
   );
 
   const departmentNames = new Map(
     departments.map((department) => [department.id, department.name]),
   );
   const departmentName = (departmentId: string | null) =>
-    departmentId ? departmentNames.get(departmentId) ?? "Unknown department" : "No department";
+    departmentId
+      ? (departmentNames.get(departmentId) ?? "Unknown department")
+      : "No department";
 
   const departmentGroups = departments
     .map((department) => ({
@@ -233,26 +264,63 @@ function AdminDashboard() {
     (user) => !user.departmentId || !departmentNames.has(user.departmentId),
   );
   const roleOf = (user: User) => user.role.toLowerCase().replace(/^.*\./, "");
-  const professorUsers = visibleUsers.filter((user) => roleOf(user) === "professor");
-  const studentUsers = visibleUsers.filter((user) => roleOf(user) === "student");
-  const otherUsers = visibleUsers.filter((user) => !["professor", "student"].includes(roleOf(user)));
+  const professorUsers = visibleUsers.filter(
+    (user) => roleOf(user) === "professor",
+  );
+  const studentUsers = visibleUsers.filter(
+    (user) => roleOf(user) === "student",
+  );
+  const otherUsers = visibleUsers.filter(
+    (user) => !["professor", "student"].includes(roleOf(user)),
+  );
   const studentsAtLevel = (level: StudentLevel) =>
-    studentUsers.filter((user) => (level === "unset" ? !user.degreeLevel : user.degreeLevel === level));
+    studentUsers.filter((user) =>
+      level === "unset" ? !user.degreeLevel : user.degreeLevel === level,
+    );
   const roleTabs: { value: RoleGroup; label: string; count: number }[] = [
     { value: "professors", label: "Professors", count: professorUsers.length },
     { value: "students", label: "Students", count: studentUsers.length },
-    ...(otherUsers.length > 0 ? [{ value: "others" as RoleGroup, label: "Other", count: otherUsers.length }] : []),
+    ...(otherUsers.length > 0
+      ? [
+          {
+            value: "others" as RoleGroup,
+            label: "Other",
+            count: otherUsers.length,
+          },
+        ]
+      : []),
   ];
   const levelTabs: { value: StudentLevel; label: string; count: number }[] = [
-    { value: "bachelors" as StudentLevel, label: "Bachelor's students", count: studentsAtLevel("bachelors").length },
-    { value: "masters" as StudentLevel, label: "Master's students", count: studentsAtLevel("masters").length },
-    { value: "phd" as StudentLevel, label: "PhD students", count: studentsAtLevel("phd").length },
-    { value: "unset" as StudentLevel, label: "Level not set", count: studentsAtLevel("unset").length },
+    {
+      value: "bachelors" as StudentLevel,
+      label: "Bachelor's students",
+      count: studentsAtLevel("bachelors").length,
+    },
+    {
+      value: "masters" as StudentLevel,
+      label: "Master's students",
+      count: studentsAtLevel("masters").length,
+    },
+    {
+      value: "phd" as StudentLevel,
+      label: "PhD students",
+      count: studentsAtLevel("phd").length,
+    },
+    {
+      value: "unset" as StudentLevel,
+      label: "Level not set",
+      count: studentsAtLevel("unset").length,
+    },
   ].filter((tab) => tab.value !== "unset" || tab.count > 0);
   const groupUsers =
-    roleGroup === "professors" ? professorUsers : roleGroup === "others" ? otherUsers : studentsAtLevel(studentLevel);
+    roleGroup === "professors"
+      ? professorUsers
+      : roleGroup === "others"
+        ? otherUsers
+        : studentsAtLevel(studentLevel);
   const programName = (user: User) =>
-    degreePrograms.find((program) => program.id === user.degreeProgramId)?.name ??
+    degreePrograms.find((program) => program.id === user.degreeProgramId)
+      ?.name ??
     profiles.find((profile) => profile.userId === user.id)?.degreeProgramName ??
     "Not set";
   const studentCount = visibleUsers.filter(
@@ -260,7 +328,9 @@ function AdminDashboard() {
   ).length;
 
   const renderUserTable = (tableUsers: User[], grouped = false) => (
-    <table className={`w-full border-collapse text-left text-sm ${grouped ? "min-w-[760px]" : "min-w-[1100px]"}`}>
+    <table
+      className={`w-full border-collapse text-left text-sm ${grouped ? "min-w-[760px]" : "min-w-[1100px]"}`}
+    >
       <thead>
         <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
           {!grouped && <th className="px-4 py-3">ID</th>}
@@ -268,8 +338,12 @@ function AdminDashboard() {
           <th className="px-4 py-3">Name</th>
           <th className="px-4 py-3">Email</th>
           {!grouped && <th className="px-4 py-3">Password</th>}
-          {grouped && roleGroup === "students" && <th className="px-4 py-3">Degree program</th>}
-          {(!grouped || roleGroup === "others") && <th className="px-4 py-3">Role</th>}
+          {grouped && roleGroup === "students" && (
+            <th className="px-4 py-3">Degree program</th>
+          )}
+          {(!grouped || roleGroup === "others") && (
+            <th className="px-4 py-3">Role</th>
+          )}
           <th className="px-4 py-3">Created At</th>
           <th className="px-4 py-3 text-right">Actions</th>
         </tr>
@@ -277,22 +351,40 @@ function AdminDashboard() {
       <tbody>
         {tableUsers.length === 0 && (
           <tr>
-            <td colSpan={8} className="px-4 py-8 text-center text-slate-500">No users in this group yet.</td>
+            <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
+              No users in this group yet.
+            </td>
           </tr>
         )}
         {tableUsers.map((user) => (
           <tr className="border-b border-slate-100" key={user.id}>
-            {!grouped && <td className="px-4 py-3 font-mono text-xs text-slate-500">{user.id}</td>}
+            {!grouped && (
+              <td className="px-4 py-3 font-mono text-xs text-slate-500">
+                {user.id}
+              </td>
+            )}
             {!grouped && (
               <td className="px-4 py-3 text-slate-600">
                 {departmentName(user.departmentId)}
               </td>
             )}
-            <td className="px-4 py-3 font-medium text-slate-800">{user.name}</td>
+            <td className="px-4 py-3 font-medium text-slate-800">
+              {user.name}
+            </td>
             <td className="px-4 py-3 text-slate-600">{user.email}</td>
-            {!grouped && <td className="px-4 py-3 font-mono text-xs text-slate-500">********</td>}
-            {grouped && roleGroup === "students" && <td className="px-4 py-3 text-slate-600">{programName(user)}</td>}
-            {(!grouped || roleGroup === "others") && <td className="px-4 py-3 capitalize text-slate-600">{user.role}</td>}
+            {!grouped && (
+              <td className="px-4 py-3 font-mono text-xs text-slate-500">
+                ********
+              </td>
+            )}
+            {grouped && roleGroup === "students" && (
+              <td className="px-4 py-3 text-slate-600">{programName(user)}</td>
+            )}
+            {(!grouped || roleGroup === "others") && (
+              <td className="px-4 py-3 capitalize text-slate-600">
+                {user.role}
+              </td>
+            )}
             <td className="px-4 py-3 whitespace-nowrap text-slate-600">
               {new Date(user.createdAt).toLocaleString()}
             </td>
@@ -322,7 +414,11 @@ function AdminDashboard() {
       const avatarUrl = await uploadAvatarImage(file);
       setProfile((current) => (current ? { ...current, avatarUrl } : current));
     } catch (uploadError) {
-      setAvatarError(uploadError instanceof Error ? uploadError.message : "Unable to upload image.");
+      setAvatarError(
+        uploadError instanceof Error
+          ? uploadError.message
+          : "Unable to upload image.",
+      );
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -333,21 +429,31 @@ function AdminDashboard() {
     try {
       const [usersResult, profilesResult] = await Promise.all([
         requestGraphQL<{ users: User[] }>(USERSQUERY),
-        role === "admin" ? requestGraphQL<{ profiles: AdminProfile[] }>(PROFILES_QUERY) : Promise.resolve({ profiles: [] as AdminProfile[] }),
+        role === "admin"
+          ? requestGraphQL<{ profiles: AdminProfile[] }>(PROFILES_QUERY)
+          : Promise.resolve({ profiles: [] as AdminProfile[] }),
       ]);
       setUsers(usersResult.users);
       setProfiles(profilesResult.profiles);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to reload users.");
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to reload users.",
+      );
     }
   };
 
   const programsForLevel = (level: string) =>
-    degreePrograms.filter((program) => program.level.toLowerCase() === level).sort((first, second) => first.name.localeCompare(second.name));
+    degreePrograms
+      .filter((program) => program.level.toLowerCase() === level)
+      .sort((first, second) => first.name.localeCompare(second.name));
 
   const reloadDegreePrograms = async () => {
     try {
-      const result = await requestGraphQL<{ degreePrograms: DegreeProgram[] }>(DEGREE_PROGRAMS_QUERY);
+      const result = await requestGraphQL<{ degreePrograms: DegreeProgram[] }>(
+        DEGREE_PROGRAMS_QUERY,
+      );
       setDegreePrograms(result.degreePrograms);
     } catch {
       // The list only feeds the degree dropdowns; the next page load refreshes it.
@@ -357,12 +463,25 @@ function AdminDashboard() {
   // Changing the level picks that level's only program, so the common case needs no second click.
   const chooseLevel = (level: string): DegreeChoice => {
     const programs = programsForLevel(level);
-    return { degreeLevel: level, degreeProgramId: programs.length === 1 ? programs[0].id : "" };
+    return {
+      degreeLevel: level,
+      degreeProgramId: programs.length === 1 ? programs[0].id : "",
+    };
   };
 
-  const renderDegreeFields = (choice: DegreeChoice, onChange: (choice: DegreeChoice) => void, required: boolean) => {
-    const programs = choice.degreeLevel ? programsForLevel(choice.degreeLevel) : [];
-    const subject = (profile?.departmentId ? departmentName(profile.departmentId) : "your department").replace(/^department of /i, "");
+  const renderDegreeFields = (
+    choice: DegreeChoice,
+    onChange: (choice: DegreeChoice) => void,
+    required: boolean,
+  ) => {
+    const programs = choice.degreeLevel
+      ? programsForLevel(choice.degreeLevel)
+      : [];
+    const subject = (
+      profile?.departmentId
+        ? departmentName(profile.departmentId)
+        : "your department"
+    ).replace(/^department of /i, "");
     return (
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="block text-sm font-medium text-slate-700">
@@ -375,23 +494,29 @@ function AdminDashboard() {
           >
             {!required && <option value="">Not set</option>}
             {DEGREE_LEVELS.map((level) => (
-              <option key={level.value} value={level.value}>{level.label}</option>
+              <option key={level.value} value={level.value}>
+                {level.label}
+              </option>
             ))}
           </select>
         </label>
-        {choice.degreeLevel && (
-          programs.length > 0 ? (
+        {choice.degreeLevel &&
+          (programs.length > 0 ? (
             <label className="block text-sm font-medium text-slate-700">
               Degree program
               <select
                 required={required}
                 value={choice.degreeProgramId}
-                onChange={(event) => onChange({ ...choice, degreeProgramId: event.target.value })}
+                onChange={(event) =>
+                  onChange({ ...choice, degreeProgramId: event.target.value })
+                }
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
               >
                 <option value="">Select program</option>
                 {programs.map((program) => (
-                  <option key={program.id} value={program.id}>{program.name}</option>
+                  <option key={program.id} value={program.id}>
+                    {program.name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -400,11 +525,13 @@ function AdminDashboard() {
               Degree program
               <p className="mt-1 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 font-normal text-slate-600">
                 {degreeLevelLabel(choice.degreeLevel)} in {subject}
-                <span className="block text-xs text-slate-500">Your department has no {degreeLevelLabel(choice.degreeLevel)} program yet, so it will be created.</span>
+                <span className="block text-xs text-slate-500">
+                  Your department has no {degreeLevelLabel(choice.degreeLevel)}{" "}
+                  program yet, so it will be created.
+                </span>
               </p>
             </div>
-          )
-        )}
+          ))}
       </div>
     );
   };
@@ -421,8 +548,16 @@ function AdminDashboard() {
 
   const openEditUser = (user: User) => {
     setEditingUser(user);
-    const currentProgram = degreePrograms.find((program) => program.id === user.degreeProgramId);
-    setEditForm({ name: user.name, email: user.email, password: "", degreeLevel: currentProgram?.level.toLowerCase() ?? "", degreeProgramId: user.degreeProgramId ?? "" });
+    const currentProgram = degreePrograms.find(
+      (program) => program.id === user.degreeProgramId,
+    );
+    setEditForm({
+      name: user.name,
+      email: user.email,
+      password: "",
+      degreeLevel: currentProgram?.level.toLowerCase() ?? "",
+      degreeProgramId: user.degreeProgramId ?? "",
+    });
     setIsEditPasswordVisible(false);
     setUpdateUserError(null);
   };
@@ -453,13 +588,18 @@ function AdminDashboard() {
           // Department admins don't pick a department (the backend derives it from their own
           // account), so send null rather than "" — the UUID scalar rejects an empty string.
           departmentId: form.departmentId || null,
-          degreeProgramId: form.role === "student" ? form.degreeProgramId || null : null,
+          degreeProgramId:
+            form.role === "student" ? form.degreeProgramId || null : null,
           // With no program chosen, the backend uses (or creates) the department's program at this level.
-          degreeLevel: form.role === "student" ? form.degreeLevel || null : null,
+          degreeLevel:
+            form.role === "student" ? form.degreeLevel || null : null,
         },
       });
       const createdLevel = form.role === "student" ? form.degreeLevel : null;
-      setUsers((currentUsers) => [{ ...result.createUser, degreeLevel: createdLevel }, ...currentUsers]);
+      setUsers((currentUsers) => [
+        { ...result.createUser, degreeLevel: createdLevel },
+        ...currentUsers,
+      ]);
       // Show the group the new user landed in; otherwise a Master's or PhD student is created
       // behind the Bachelor's tab and it looks as if nothing happened.
       if (role === "admin") {
@@ -474,13 +614,23 @@ function AdminDashboard() {
       setNotice(
         `${result.createUser.name} was created${createdLevel ? ` as a ${degreeLevelLabel(createdLevel)} student` : form.role === "professor" ? " as a professor" : ""}.`,
       );
-      setForm({ name: "", email: "", password: "", role: "student", departmentId: "", degreeLevel: "bachelors", degreeProgramId: "" });
+      setForm({
+        name: "",
+        email: "",
+        password: "",
+        role: "student",
+        departmentId: "",
+        degreeLevel: "bachelors",
+        degreeProgramId: "",
+      });
       await reloadDegreePrograms();
       await reloadDirectory();
       closeCreateUser();
     } catch (requestError) {
       setCreateUserError(
-        requestError instanceof Error ? requestError.message : "Unable to create user.",
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to create user.",
       );
     } finally {
       setIsCreatingUser(false);
@@ -501,21 +651,31 @@ function AdminDashboard() {
           name: editForm.name,
           email: editForm.email,
           password: editForm.password,
-          degreeProgramId: editingUser.role === "student" ? editForm.degreeProgramId || null : null,
-          degreeLevel: editingUser.role === "student" ? editForm.degreeLevel || null : null,
+          degreeProgramId:
+            editingUser.role === "student"
+              ? editForm.degreeProgramId || null
+              : null,
+          degreeLevel:
+            editingUser.role === "student"
+              ? editForm.degreeLevel || null
+              : null,
         },
       });
       await reloadDegreePrograms();
       setUsers((currentUsers) =>
         currentUsers.map((user) =>
-          user.id === result.updateUser.id ? { ...user, ...result.updateUser } : user,
+          user.id === result.updateUser.id
+            ? { ...user, ...result.updateUser }
+            : user,
         ),
       );
       await reloadDirectory();
       closeEditUser();
     } catch (requestError) {
       setUpdateUserError(
-        requestError instanceof Error ? requestError.message : "Unable to update user.",
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to update user.",
       );
     } finally {
       setIsUpdatingUser(false);
@@ -556,14 +716,22 @@ function AdminDashboard() {
               <Menu size={20} aria-hidden="true" />
             </button>
             <div>
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-blue-600">ARMS dashboard</p>
-            <h1 className="mt-1 font-serif text-2xl text-slate-900">Academic Research Management System</h1>
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-blue-600">
+                ARMS dashboard
+              </p>
+              <h1 className="mt-1 font-serif text-2xl text-slate-900">
+                Academic Research Management System
+              </h1>
             </div>
           </div>
           <div className="hidden text-right sm:block">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Workspace</p>
+            <p className="text-xs uppercase tracking-wide text-slate-400">
+              Workspace
+            </p>
             <p className="text-sm font-medium text-slate-700">
-              {role === "super_admin" ? "Super administrator" : "Department administrator"}
+              {role === "super_admin"
+                ? "Super administrator"
+                : "Department administrator"}
             </p>
           </div>
         </div>
@@ -571,163 +739,263 @@ function AdminDashboard() {
           {activeView === "profile" ? (
             <section className="p-6">
               <div className="max-w-2xl rounded-2xl border border-slate-200 bg-slate-50 p-6">
-                <p className="text-xs font-medium uppercase tracking-[0.2em] text-blue-600">Account profile</p>
+                <p className="text-xs font-medium uppercase tracking-[0.2em] text-blue-600">
+                  Account profile
+                </p>
                 <div className="mt-3 flex items-center gap-4">
                   <div className="flex size-16 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-200 text-xl font-semibold uppercase text-slate-600">
                     {profile?.avatarUrl ? (
-                      <img src={resolveAvatarUrl(profile.avatarUrl) ?? undefined} alt="Profile" className="size-full object-cover" />
+                      <img
+                        src={resolveAvatarUrl(profile.avatarUrl) ?? undefined}
+                        alt="Profile"
+                        className="size-full object-cover"
+                      />
                     ) : (
                       (profile?.name.trim()?.[0] ?? "?")
                     )}
                   </div>
-                  <h2 className="text-2xl font-semibold text-slate-900">{profile?.name ?? "Administrator"}</h2>
+                  <h2 className="text-2xl font-semibold text-slate-900">
+                    {profile?.name ?? "Administrator"}
+                  </h2>
                 </div>
                 {profile ? (
                   <dl className="mt-6 grid gap-4 sm:grid-cols-2">
-                    <div><dt className="text-xs uppercase tracking-wide text-slate-400">Email</dt><dd className="mt-1 text-sm text-slate-700">{profile.email}</dd></div>
-                    <div><dt className="text-xs uppercase tracking-wide text-slate-400">Role</dt><dd className="mt-1 text-sm capitalize text-slate-700">{profile.role.replace(/_/g, " ")}</dd></div>
-                    <div><dt className="text-xs uppercase tracking-wide text-slate-400">Department</dt><dd className="mt-1 text-sm text-slate-700">{profile.departmentId ? departmentName(profile.departmentId) : "All departments"}</dd></div>
-                    <div><dt className="text-xs uppercase tracking-wide text-slate-400">Member since</dt><dd className="mt-1 text-sm text-slate-700">{new Date(profile.createdAt).toLocaleDateString()}</dd></div>
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide text-slate-400">
+                        Email
+                      </dt>
+                      <dd className="mt-1 text-sm text-slate-700">
+                        {profile.email}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide text-slate-400">
+                        Role
+                      </dt>
+                      <dd className="mt-1 text-sm capitalize text-slate-700">
+                        {profile.role.replace(/_/g, " ")}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide text-slate-400">
+                        Department
+                      </dt>
+                      <dd className="mt-1 text-sm text-slate-700">
+                        {profile.departmentId
+                          ? departmentName(profile.departmentId)
+                          : "All departments"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide text-slate-400">
+                        Member since
+                      </dt>
+                      <dd className="mt-1 text-sm text-slate-700">
+                        {new Date(profile.createdAt).toLocaleDateString()}
+                      </dd>
+                    </div>
                   </dl>
-                ) : <p className="mt-4 text-sm text-slate-500">Profile details are unavailable.</p>}
+                ) : (
+                  <p className="mt-4 text-sm text-slate-500">
+                    Profile details are unavailable.
+                  </p>
+                )}
               </div>
             </section>
           ) : activeView === "management" ? (
             <AdminManagement role={role} />
-          ) : <>
-          <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-            <div>
-              <h2 className="text-lg font-medium text-slate-800">Users</h2>
-              <p className="text-sm text-slate-500">
-                {role === "admin" ? "Manage the accounts and profiles of your department's professors and students" : "Manage registered users"}
-              </p>
-            </div>
-            <div className="flex items-center gap-4">
-              {role === "admin" && (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-right">
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Students</p>
-                  <p className="text-xl font-semibold text-slate-900">{studentCount}</p>
-                </div>
-              )}
-              {canCreateUsers && (
-                <Button
-                  label={role === "super_admin" ? "Create Department Admin" : "Create User"}
-                  icon={Plus}
-                  color="blue"
-                  onClick={() => {
-                    if (role === "super_admin") {
-                      openDepartmentAdminForm();
-                      return;
-                    }
-                    setCreateUserError(null);
-                    setNotice(null);
-                    setForm((currentForm) => ({ ...currentForm, ...chooseLevel(currentForm.degreeLevel || "bachelors") }));
-                    setIsCreateUserOpen(true);
-                  }}
-                />
-              )}
-            </div>
-          </div>
-          <div className="overflow-x-auto p-6">
-            {error ? (
-              <p className="rounded-lg bg-red-50 p-4 text-sm text-red-700">
-                {error}
-              </p>
-            ) : role === "admin" ? (
-              <div className="space-y-4">
-                {notice && (
-                  <p className="flex items-center justify-between gap-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
-                    {notice}
-                    <button type="button" aria-label="Dismiss" onClick={() => setNotice(null)} className="text-emerald-700 hover:text-emerald-900">
-                      <X size={16} aria-hidden="true" />
-                    </button>
+          ) : (
+            <>
+              <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+                <div>
+                  <h2 className="text-lg font-medium text-slate-800">Users</h2>
+                  <p className="text-sm text-slate-500">
+                    {role === "admin"
+                      ? "Manage the accounts and profiles of your department's professors and students"
+                      : "Manage registered users"}
                   </p>
-                )}
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1" role="tablist" aria-label="People">
-                    {roleTabs.map((tab) => (
-                      <button
-                        key={tab.value}
-                        type="button"
-                        role="tab"
-                        aria-selected={roleGroup === tab.value}
-                        onClick={() => setRoleGroup(tab.value)}
-                        className={`rounded-lg px-3 py-1.5 text-sm font-medium ${roleGroup === tab.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
-                      >
-                        {tab.label} <span className="ml-1 text-xs text-slate-400">{tab.count}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="inline-flex gap-1 rounded-xl border border-slate-200 p-1" role="tablist" aria-label="Accounts or profiles">
-                    {(["accounts", "profiles"] as const).map((view) => (
-                      <button
-                        key={view}
-                        type="button"
-                        role="tab"
-                        aria-selected={directoryView === view}
-                        onClick={() => setDirectoryView(view)}
-                        className={`rounded-lg px-3 py-1.5 text-sm font-medium capitalize ${directoryView === view ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
-                      >
-                        {view}
-                      </button>
-                    ))}
-                  </div>
                 </div>
-                {roleGroup === "students" && (
-                  <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3" role="tablist" aria-label="Degree level">
-                    {levelTabs.map((tab) => (
-                      <button
-                        key={tab.value}
-                        type="button"
-                        role="tab"
-                        aria-selected={studentLevel === tab.value}
-                        onClick={() => setStudentLevel(tab.value)}
-                        className={`rounded-lg px-3 py-1.5 text-sm font-medium ${studentLevel === tab.value ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200" : "text-slate-600 hover:bg-slate-100"}`}
+                <div className="flex items-center gap-4">
+                  {role === "admin" && (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-right">
+                      <p className="text-xs uppercase tracking-wide text-slate-400">
+                        Students
+                      </p>
+                      <p className="text-xl font-semibold text-slate-900">
+                        {studentCount}
+                      </p>
+                    </div>
+                  )}
+                  {canCreateUsers && (
+                    <Button
+                      label={
+                        role === "super_admin"
+                          ? "Create Department Admin"
+                          : "Create User"
+                      }
+                      icon={Plus}
+                      color="blue"
+                      onClick={() => {
+                        if (role === "super_admin") {
+                          openDepartmentAdminForm();
+                          return;
+                        }
+                        setCreateUserError(null);
+                        setNotice(null);
+                        setForm((currentForm) => ({
+                          ...currentForm,
+                          ...chooseLevel(
+                            currentForm.degreeLevel || "bachelors",
+                          ),
+                        }));
+                        setIsCreateUserOpen(true);
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="overflow-x-auto p-6">
+                {error ? (
+                  <p className="rounded-lg bg-red-50 p-4 text-sm text-red-700">
+                    {error}
+                  </p>
+                ) : role === "admin" ? (
+                  <div className="space-y-4">
+                    {notice && (
+                      <p className="flex items-center justify-between gap-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
+                        {notice}
+                        <button
+                          type="button"
+                          aria-label="Dismiss"
+                          onClick={() => setNotice(null)}
+                          className="text-emerald-700 hover:text-emerald-900"
+                        >
+                          <X size={16} aria-hidden="true" />
+                        </button>
+                      </p>
+                    )}
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div
+                        className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
+                        role="tablist"
+                        aria-label="People"
                       >
-                        {tab.label} <span className="ml-1 text-xs opacity-70">{tab.count}</span>
-                      </button>
+                        {roleTabs.map((tab) => (
+                          <button
+                            key={tab.value}
+                            type="button"
+                            role="tab"
+                            aria-selected={roleGroup === tab.value}
+                            onClick={() => setRoleGroup(tab.value)}
+                            className={`rounded-lg px-3 py-1.5 text-sm font-medium ${roleGroup === tab.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
+                          >
+                            {tab.label}{" "}
+                            <span className="ml-1 text-xs text-slate-400">
+                              {tab.count}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      <div
+                        className="inline-flex gap-1 rounded-xl border border-slate-200 p-1"
+                        role="tablist"
+                        aria-label="Accounts or profiles"
+                      >
+                        {(["accounts", "profiles"] as const).map((view) => (
+                          <button
+                            key={view}
+                            type="button"
+                            role="tab"
+                            aria-selected={directoryView === view}
+                            onClick={() => setDirectoryView(view)}
+                            className={`rounded-lg px-3 py-1.5 text-sm font-medium capitalize ${directoryView === view ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                          >
+                            {view}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {roleGroup === "students" && (
+                      <div
+                        className="flex flex-wrap gap-2 border-b border-slate-200 pb-3"
+                        role="tablist"
+                        aria-label="Degree level"
+                      >
+                        {levelTabs.map((tab) => (
+                          <button
+                            key={tab.value}
+                            type="button"
+                            role="tab"
+                            aria-selected={studentLevel === tab.value}
+                            onClick={() => setStudentLevel(tab.value)}
+                            className={`rounded-lg px-3 py-1.5 text-sm font-medium ${studentLevel === tab.value ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200" : "text-slate-600 hover:bg-slate-100"}`}
+                          >
+                            {tab.label}{" "}
+                            <span className="ml-1 text-xs opacity-70">
+                              {tab.count}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {directoryView === "accounts" ? (
+                      <div className="overflow-x-auto">
+                        {renderUserTable(groupUsers, true)}
+                      </div>
+                    ) : roleGroup === "others" ? (
+                      <p className="rounded-lg bg-slate-50 p-8 text-center text-sm text-slate-500">
+                        Only professors and students have profiles.
+                      </p>
+                    ) : (
+                      <ProfileManagement
+                        key={`${roleGroup}-${studentLevel}`}
+                        profileType={
+                          roleGroup === "professors" ? "professor" : "student"
+                        }
+                        users={groupUsers}
+                        profiles={profiles}
+                        degreePrograms={degreePrograms}
+                        professors={professorUsers}
+                        degreeLevel={
+                          roleGroup === "students" && studentLevel !== "unset"
+                            ? studentLevel
+                            : null
+                        }
+                        onSaved={reloadDirectory}
+                      />
+                    )}
+                  </div>
+                ) : visibleUsers.length === 0 ? (
+                  <p className="rounded-lg bg-slate-50 p-8 text-center text-slate-500">
+                    No users found.
+                  </p>
+                ) : (
+                  <div className="space-y-8">
+                    {departmentGroups.map((group) => (
+                      <section key={group.department.id}>
+                        <h3 className="mb-3 text-base font-semibold text-slate-800">
+                          {group.department.name}
+                        </h3>
+                        <div className="overflow-x-auto">
+                          {renderUserTable(group.users)}
+                        </div>
+                      </section>
                     ))}
+                    {usersWithoutDepartment.length > 0 && (
+                      <section>
+                        <h3 className="mb-3 text-base font-semibold text-slate-800">
+                          Other users
+                        </h3>
+                        <div className="overflow-x-auto">
+                          {renderUserTable(usersWithoutDepartment)}
+                        </div>
+                      </section>
+                    )}
                   </div>
                 )}
-                {directoryView === "accounts" ? (
-                  <div className="overflow-x-auto">{renderUserTable(groupUsers, true)}</div>
-                ) : roleGroup === "others" ? (
-                  <p className="rounded-lg bg-slate-50 p-8 text-center text-sm text-slate-500">Only professors and students have profiles.</p>
-                ) : (
-                  <ProfileManagement
-                    key={`${roleGroup}-${studentLevel}`}
-                    profileType={roleGroup === "professors" ? "professor" : "student"}
-                    users={groupUsers}
-                    profiles={profiles}
-                    degreePrograms={degreePrograms}
-                    professors={professorUsers}
-                    degreeLevel={roleGroup === "students" && studentLevel !== "unset" ? studentLevel : null}
-                    onSaved={reloadDirectory}
-                  />
-                )}
               </div>
-            ) : visibleUsers.length === 0 ? (
-              <p className="rounded-lg bg-slate-50 p-8 text-center text-slate-500">No users found.</p>
-            ) : (
-              <div className="space-y-8">
-                {departmentGroups.map((group) => (
-                  <section key={group.department.id}>
-                    <h3 className="mb-3 text-base font-semibold text-slate-800">
-                      {group.department.name}
-                    </h3>
-                    <div className="overflow-x-auto">{renderUserTable(group.users)}</div>
-                  </section>
-                ))}
-                {usersWithoutDepartment.length > 0 && (
-                  <section>
-                    <h3 className="mb-3 text-base font-semibold text-slate-800">Other users</h3>
-                    <div className="overflow-x-auto">{renderUserTable(usersWithoutDepartment)}</div>
-                  </section>
-                )}
-              </div>
-            )}
-          </div>
-          </>}
+            </>
+          )}
         </div>
       </div>
       {isCreateUserOpen && (
@@ -736,7 +1004,9 @@ function AdminDashboard() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-xl font-semibold text-slate-900">
-                  {role === "super_admin" ? "Create department admin" : "Create user"}
+                  {role === "super_admin"
+                    ? "Create department admin"
+                    : "Create user"}
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
                   {role === "super_admin"
@@ -781,16 +1051,24 @@ function AdminDashboard() {
                     minLength={8}
                     type={isPasswordVisible ? "text" : "password"}
                     value={form.password}
-                    onChange={(event) => updateForm("password", event.target.value)}
+                    onChange={(event) =>
+                      updateForm("password", event.target.value)
+                    }
                     className="w-full rounded-lg border border-slate-300 px-3 py-2.5 pr-11 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                   />
                   <button
                     type="button"
-                    aria-label={isPasswordVisible ? "Hide password" : "Show password"}
+                    aria-label={
+                      isPasswordVisible ? "Hide password" : "Show password"
+                    }
                     onClick={() => setIsPasswordVisible((visible) => !visible)}
                     className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-500 hover:text-slate-800"
                   >
-                    {isPasswordVisible ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                    {isPasswordVisible ? (
+                      <EyeOff size={18} aria-hidden="true" />
+                    ) : (
+                      <Eye size={18} aria-hidden="true" />
+                    )}
                   </button>
                 </span>
               </label>
@@ -803,12 +1081,16 @@ function AdminDashboard() {
                     onChange={(event) => updateForm("role", event.target.value)}
                     className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                   >
-                    {role === "admin" && <>
-                      <option value="student">Student</option>
-                      <option value="professor">Professor</option>
-                      <option value="external">External</option>
-                    </>}
-                    {role === "super_admin" && <option value="admin">Department admin</option>}
+                    {role === "admin" && (
+                      <>
+                        <option value="student">Student</option>
+                        <option value="professor">Professor</option>
+                        <option value="external">External</option>
+                      </>
+                    )}
+                    {role === "super_admin" && (
+                      <option value="admin">Department admin</option>
+                    )}
                   </select>
                 </label>
                 {role === "super_admin" ? (
@@ -817,7 +1099,9 @@ function AdminDashboard() {
                     <select
                       required
                       value={form.departmentId}
-                      onChange={(event) => updateForm("departmentId", event.target.value)}
+                      onChange={(event) =>
+                        updateForm("departmentId", event.target.value)
+                      }
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                     >
                       <option value="">Select department</option>
@@ -832,20 +1116,32 @@ function AdminDashboard() {
                   <div className="text-sm font-medium text-slate-700">
                     Department
                     <p className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-normal text-slate-600">
-                      {profile?.departmentId ? departmentName(profile.departmentId) : "Your department"}
+                      {profile?.departmentId
+                        ? departmentName(profile.departmentId)
+                        : "Your department"}
                     </p>
                   </div>
                 )}
               </div>
               {form.role === "student" && (
                 <div>
-                  {renderDegreeFields(form, (choice) => setForm((currentForm) => ({ ...currentForm, ...choice })), true)}
+                  {renderDegreeFields(
+                    form,
+                    (choice) =>
+                      setForm((currentForm) => ({ ...currentForm, ...choice })),
+                    true,
+                  )}
                   <span className="mt-1 block text-xs font-normal text-slate-500">
-                    The student's profile is created automatically once they submit a proposal.
+                    The student's profile is created automatically once they
+                    submit a proposal.
                   </span>
                 </div>
               )}
-              {createUserError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{createUserError}</p>}
+              {createUserError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {createUserError}
+                </p>
+              )}
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
@@ -871,8 +1167,12 @@ function AdminDashboard() {
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-xl font-semibold text-slate-900">Edit user</h2>
-                <p className="mt-1 text-sm text-slate-500">Update {editingUser.name}'s account details.</p>
+                <h2 className="text-xl font-semibold text-slate-900">
+                  Edit user
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Update {editingUser.name}'s account details.
+                </p>
               </div>
               <button
                 type="button"
@@ -889,7 +1189,9 @@ function AdminDashboard() {
                 <input
                   required
                   value={editForm.name}
-                  onChange={(event) => updateEditForm("name", event.target.value)}
+                  onChange={(event) =>
+                    updateEditForm("name", event.target.value)
+                  }
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 />
               </label>
@@ -899,7 +1201,9 @@ function AdminDashboard() {
                   required
                   type="email"
                   value={editForm.email}
-                  onChange={(event) => updateEditForm("email", event.target.value)}
+                  onChange={(event) =>
+                    updateEditForm("email", event.target.value)
+                  }
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 />
               </label>
@@ -911,21 +1215,46 @@ function AdminDashboard() {
                     minLength={8}
                     type={isEditPasswordVisible ? "text" : "password"}
                     value={editForm.password}
-                    onChange={(event) => updateEditForm("password", event.target.value)}
+                    onChange={(event) =>
+                      updateEditForm("password", event.target.value)
+                    }
                     className="w-full rounded-lg border border-slate-300 px-3 py-2.5 pr-11 font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                   />
                   <button
                     type="button"
-                    aria-label={isEditPasswordVisible ? "Hide new password" : "Show new password"}
-                    onClick={() => setIsEditPasswordVisible((visible) => !visible)}
+                    aria-label={
+                      isEditPasswordVisible
+                        ? "Hide new password"
+                        : "Show new password"
+                    }
+                    onClick={() =>
+                      setIsEditPasswordVisible((visible) => !visible)
+                    }
                     className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-500 hover:text-slate-800"
                   >
-                    {isEditPasswordVisible ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                    {isEditPasswordVisible ? (
+                      <EyeOff size={18} aria-hidden="true" />
+                    ) : (
+                      <Eye size={18} aria-hidden="true" />
+                    )}
                   </button>
                 </span>
               </label>
-              {editingUser?.role === "student" && renderDegreeFields(editForm, (choice) => setEditForm((currentForm) => ({ ...currentForm, ...choice })), false)}
-              {updateUserError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{updateUserError}</p>}
+              {editingUser?.role === "student" &&
+                renderDegreeFields(
+                  editForm,
+                  (choice) =>
+                    setEditForm((currentForm) => ({
+                      ...currentForm,
+                      ...choice,
+                    })),
+                  false,
+                )}
+              {updateUserError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {updateUserError}
+                </p>
+              )}
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"

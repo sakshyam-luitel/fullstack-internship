@@ -1,6 +1,6 @@
-import { CalendarDays, Clock, Download, Eye, MapPin } from "lucide-react";
+import { CalendarDays, Clock, Download, Eye, MapPin, MessageSquareText, RotateCcw } from "lucide-react";
 import { downloadDocumentFile, viewDocumentFile, type DocumentKind } from "../utils/proposalFile";
-import { isPastDefense, reportLabel } from "../utils/defenses";
+import { DEFENSE_TONE_LABELS, DEFENSE_TONE_STYLES, defenseTone, formatDefenseDate, reportLabel } from "../utils/defenses";
 
 export interface DefenseDetails {
   id: string;
@@ -20,16 +20,11 @@ export interface DefenseDetails {
   reportDocumentId: string | null;
   reportFilename: string | null;
   originalFilename: string | null;
-}
-
-
-
-function statusBadge(defense: DefenseDetails): { label: string; className: string } {
-  if (defense.currentStatus === "accepted") return { label: "Passed", className: "bg-emerald-50 text-emerald-700" };
-  if (defense.currentStatus === "rejected") return { label: "Not passed", className: "bg-red-50 text-red-700" };
-  return isPastDefense(defense)
-    ? { label: "Awaiting outcome", className: "bg-slate-100 text-slate-600" }
-    : { label: "Upcoming", className: "bg-blue-50 text-blue-700" };
+  outcomeComments: string | null;
+  outcomeRecordedAt: string | null;
+  outcomeRecordedByName: string | null;
+  requiresRedefense: boolean;
+  hasEnded: boolean;
 }
 
 interface DefenseCardProps {
@@ -41,14 +36,15 @@ interface DefenseCardProps {
 
 // When and where a defense happens, which report it defends, and who is on the panel.
 function DefenseCard({ defense, showPeople = false, onError }: DefenseCardProps) {
-  const badge = statusBadge(defense);
+  const tone = defenseTone(defense);
+  const style = DEFENSE_TONE_STYLES[tone];
   const open = (kind: DocumentKind, id: string) =>
     void viewDocumentFile(kind, id).catch((error: unknown) => onError(error instanceof Error ? error.message : "Unable to open the document."));
   const download = (kind: DocumentKind, id: string, name: string) =>
     void downloadDocumentFile(kind, id, name).catch((error: unknown) => onError(error instanceof Error ? error.message : "Unable to download the document."));
 
   return (
-    <article className="rounded-xl border border-slate-200 p-4">
+    <article className={`rounded-xl border p-4 ${style.card}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
@@ -56,14 +52,14 @@ function DefenseCard({ defense, showPeople = false, onError }: DefenseCardProps)
           </p>
           <h3 className="mt-0.5 font-medium text-slate-900">{defense.paperTitle ?? "Untitled research"}</h3>
         </div>
-        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>{badge.label}</span>
+        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${style.badge}`}>{DEFENSE_TONE_LABELS[tone]}</span>
       </div>
-      <dl className="mt-3 grid gap-3 rounded-lg bg-slate-50 p-3 text-sm sm:grid-cols-3">
+      <dl className="mt-3 grid gap-3 rounded-lg bg-slate-50/80 p-3 text-sm sm:grid-cols-3">
         <div className="flex items-start gap-2">
           <CalendarDays size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-slate-400" />
           <div>
             <dt className="text-xs text-slate-500">Date</dt>
-            <dd className="font-medium text-slate-800">{new Date(defense.defenseDate).toLocaleDateString(undefined, { weekday: "short", dateStyle: "medium" })}</dd>
+            <dd className="font-medium text-slate-800">{formatDefenseDate(defense.defenseDate)}</dd>
           </div>
         </div>
         <div className="flex items-start gap-2">
@@ -85,6 +81,26 @@ function DefenseCard({ defense, showPeople = false, onError }: DefenseCardProps)
         {showPeople && <p><span className="text-slate-400">Students:</span> {defense.studentNames.join(", ") || "—"} · <span className="text-slate-400">Supervisor:</span> {defense.supervisorName ?? "not assigned"}</p>}
         <p><span className="text-slate-400">Panel:</span> {defense.panelNames.join(", ") || "Not announced yet"}</p>
       </div>
+      {defense.requiresRedefense && (
+        <p className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+          <RotateCcw size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+          <span>This {reportLabel(defense.kind).toLowerCase()} has to be defended again. The department will announce the new date.</span>
+        </p>
+      )}
+      {defense.outcomeComments && (
+        <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${style.notice}`}>
+          <p className="flex items-center gap-1.5 font-semibold">
+            <MessageSquareText size={14} aria-hidden="true" /> Panel feedback
+          </p>
+          <p className="mt-1 whitespace-pre-line">{defense.outcomeComments}</p>
+          {defense.outcomeRecordedByName && (
+            <p className="mt-1 opacity-70">
+              Recorded by {defense.outcomeRecordedByName}
+              {defense.outcomeRecordedAt ? ` on ${formatDefenseDate(defense.outcomeRecordedAt)}` : ""}
+            </p>
+          )}
+        </div>
+      )}
       {(defense.reportFilename || (defense.kind === "defense" && defense.originalFilename)) && (
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
           {defense.reportFilename && defense.reportDocumentKind && defense.reportDocumentId && (
