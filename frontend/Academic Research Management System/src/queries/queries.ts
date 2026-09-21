@@ -63,7 +63,7 @@ export const DEGREE_PROGRAMS_QUERY = gql`
 export const RESEARCH_PHASES_QUERY = gql`
   query ResearchPhases {
     researchPhases {
-      id phaseType degreeLevel label sequenceNumber opensAt deadlineAt defenseDate gracePeriodEnabled isOpen hasEnded
+      id phaseType degreeLevel label sequenceNumber opensAt deadlineAt defenseDate gracePeriodEnabled isOpen hasEnded status closedAt
     }
   }
 `;
@@ -72,6 +72,7 @@ const DEFENSE_FIELDS = `
   id kind proposalId progressReportId paperId paperTitle defenseDate scheduledTime location submissionConfirmed
   phaseId phaseLabel currentStatus degreeLevel studentNames supervisorName panelNames panelProfessorIds
   reportDocumentKind reportDocumentId reportFilename originalFilename
+  outcomeComments outcomeRecordedAt outcomeRecordedByName requiresRedefense hasEnded
 `;
 
 export const DEFENSE_CANDIDATES_QUERY = gql`

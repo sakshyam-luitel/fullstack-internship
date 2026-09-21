@@ -42,32 +42,64 @@ export const UPDATE_USER = gql`
 
 export const CREATE_STUDENT_PROFILE = gql`
   mutation CreateStudentProfile($adminInput: StudentProfilesInput!) {
-    createStudentProfile(adminInput: $adminInput) { userId degreeProgramId supervisorId status rollNumber }
+    createStudentProfile(adminInput: $adminInput) {
+      userId
+      degreeProgramId
+      supervisorId
+      status
+      rollNumber
+    }
   }
 `;
 
 export const UPDATE_STUDENT_PROFILE = gql`
   mutation UpdateStudentProfile($adminInput: StudentProfileUpdateInput!) {
-    updateStudentProfile(adminInput: $adminInput) { userId degreeProgramId supervisorId status rollNumber }
+    updateStudentProfile(adminInput: $adminInput) {
+      userId
+      degreeProgramId
+      supervisorId
+      status
+      rollNumber
+    }
   }
 `;
 
 export const CREATE_PROFESSOR_PROFILE = gql`
   mutation CreateProfessorProfile($adminInput: ProfessorProfileInput!) {
-    createProfessorProfile(adminInput: $adminInput) { userId academicRank maxStudents }
+    createProfessorProfile(adminInput: $adminInput) {
+      userId
+      academicRank
+      maxStudents
+    }
   }
 `;
 
 export const UPDATE_PROFESSOR_PROFILE = gql`
   mutation UpdateProfessorProfile($adminInput: ProfessorProfileUpdateInput!) {
-    updateProfessorProfile(adminInput: $adminInput) { userId academicRank maxStudents }
+    updateProfessorProfile(adminInput: $adminInput) {
+      userId
+      academicRank
+      maxStudents
+    }
   }
 `;
 
 export const CREATE_RESEARCH_PHASE = gql`
   mutation CreateResearchPhase($adminInput: ResearchPhaseInput!) {
     createResearchPhase(adminInput: $adminInput) {
-      id phaseType degreeLevel label sequenceNumber opensAt deadlineAt defenseDate gracePeriodEnabled isOpen notifiedCount
+      id
+      phaseType
+      degreeLevel
+      label
+      sequenceNumber
+      opensAt
+      deadlineAt
+      defenseDate
+      gracePeriodEnabled
+      isOpen
+      status
+      closedAt
+      notifiedCount
     }
   }
 `;
@@ -75,7 +107,19 @@ export const CREATE_RESEARCH_PHASE = gql`
 export const UPDATE_RESEARCH_PHASE = gql`
   mutation UpdateResearchPhase($adminInput: ResearchPhaseUpdateInput!) {
     updateResearchPhase(adminInput: $adminInput) {
-      id phaseType degreeLevel label sequenceNumber opensAt deadlineAt defenseDate gracePeriodEnabled isOpen notifiedCount
+      id
+      phaseType
+      degreeLevel
+      label
+      sequenceNumber
+      opensAt
+      deadlineAt
+      defenseDate
+      gracePeriodEnabled
+      isOpen
+      status
+      closedAt
+      notifiedCount
     }
   }
 `;
@@ -89,25 +133,71 @@ export const MARK_NOTIFICATIONS_READ = gql`
 export const SCHEDULE_RESEARCH_DEFENSE = gql`
   mutation ScheduleDefense($adminInput: ScheduleDefenseInput!) {
     scheduleDefense(adminInput: $adminInput) {
-      id kind proposalId progressReportId paperId defenseDate scheduledTime location submissionConfirmed phaseId currentStatus
+      id
+      kind
+      proposalId
+      progressReportId
+      paperId
+      defenseDate
+      scheduledTime
+      location
+      submissionConfirmed
+      phaseId
+      currentStatus
+    }
+  }
+`;
+
+export const OPEN_RESEARCH_PHASE = gql`
+  mutation OpenResearchPhase($adminInput: ResearchPhaseIdInput!) {
+    openResearchPhase(adminInput: $adminInput) {
+      id
+      label
+      status
+      isOpen
+      notifiedCount
+    }
+  }
+`;
+
+export const CLOSE_RESEARCH_PHASE = gql`
+  mutation CloseResearchPhase($adminInput: ResearchPhaseIdInput!) {
+    closeResearchPhase(adminInput: $adminInput) {
+      id
+      label
+      status
+      closedAt
     }
   }
 `;
 
 export const DELETE_RESEARCH_PHASE = gql`
   mutation DeleteResearchPhase($adminInput: ResearchPhaseDeleteInput!) {
-    deleteResearchPhase(adminInput: $adminInput) { id }
+    deleteResearchPhase(adminInput: $adminInput) {
+      id
+    }
   }
 `;
 
-export const ADD_DEFENSE_PANEL_MEMBER = gql`
-  mutation AddDefensePanelMember($adminInput: DefensePanelInput!) {
-    addDefensePanelMember(adminInput: $adminInput) { id defenseId professorId professorName createdAt }
+
+export const SUBMIT_DEFENSE_VERDICT = gql`
+  mutation SubmitDefenseVerdict($professorInput: DefenseVerdictInput!) {
+    submitDefenseVerdict(professorInput: $professorInput) {
+      id
+      currentStatus
+      outcomeComments
+      requiresRedefense
+    }
   }
 `;
 
-export const RECORD_DEFENSE_OUTCOME = gql`
-  mutation RecordDefenseOutcome($adminInput: DefenseOutcomeInput!) {
-    recordDefenseOutcome(adminInput: $adminInput) { id currentStatus }
+export const RESET_TO_NEW_BATCH = gql`
+  mutation ResetToNewBatch($adminInput: ResetToNewBatchInput!) {
+    resetToNewBatch(adminInput: $adminInput) {
+      id
+      label
+      status
+      startedAt
+    }
   }
 `;
