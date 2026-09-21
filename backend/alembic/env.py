@@ -16,7 +16,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-load_dotenv()
+# backend/.env regardless of the folder alembic is run from; environment variables still win.
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 database_url = os.getenv("DATABASE_URL")
 if database_url:

@@ -5,9 +5,15 @@ whose final report was approved (the final defense). It records the phase the
 submission belongs to when there is one; proposals from before the research
 timeline have none. Only final defenses take a thesis upload. Panels are
 chosen when the defense is planned.
+
+Once the panel has sat (see has_ended), the department admin records the
+verdict on the row: current_status "accepted" means defended and "rejected"
+means not defended, alongside the feedback the student is shown and whether
+they have to defend again.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import or_
@@ -43,6 +49,27 @@ def defense_subject(db, defense: models.Defenses) -> DefenseSubject:
         proposal = db.get(models.Proposals, paper.proposal_id)
     title = (proposal.title if proposal else None) or (paper.title if paper else None) or "Untitled research"
     return DefenseSubject(kind=kind, title=title, proposal=proposal, paper=paper, report=report)
+
+
+def has_ended(defense: models.Defenses) -> bool:
+    """Whether the defense has been heard, so its outcome can be recorded.
+
+    defense_date is the day at local midnight and scheduled_time is the slot on
+    it, so the two together are when the panel sits. Without a slot there is no
+    time of day to go on, and the whole day has to pass first.
+    """
+    when = defense.defense_date
+    if when is None:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if defense.scheduled_time is not None:
+        when = when.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            hours=defense.scheduled_time.hour, minutes=defense.scheduled_time.minute
+        )
+    else:
+        when = when + timedelta(days=1)
+    return when <= datetime.now(timezone.utc)
 
 
 def is_final(defense: models.Defenses) -> bool:
@@ -176,7 +203,58 @@ def defense_schema(db, defense: models.Defenses) -> schemas.DefenseSchema:
         report_document_kind=document[0] if document[2] else None,
         report_document_id=document[1] if document[2] else None,
         report_filename=document[2],
+        outcome_comments=defense.outcome_comments,
+        outcome_recorded_at=defense.outcome_recorded_at,
+        outcome_recorded_by_name=db.query(models.User.name).filter(models.User.id == defense.outcome_recorded_by).scalar() if defense.outcome_recorded_by else None,
+        requires_redefense=bool(defense.requires_redefense),
+        has_ended=has_ended(defense),
     )
+
+
+def panel_verdicts(db, defense_id) -> list:
+    """Every vote cast on a defense so far, oldest first."""
+    return (
+        db.query(models.DefenseVerdict)
+        .filter(models.DefenseVerdict.defense_id == defense_id)
+        .order_by(models.DefenseVerdict.submitted_at.asc())
+        .all()
+    )
+
+
+def finalize_if_complete(db, defense: models.Defenses):
+    """Settle the outcome once every panel member has voted, or return None.
+
+    The panel decides on its own: a straight majority of accept votes passes the
+    defense, anything else fails it. Nobody confirms or overrides this, so
+    outcome_recorded_by stays null — no single person made the call — and the
+    tally plus each member's comments become the feedback the student sees.
+    Panels are odd-sized (validate_panel), so there is no tie to break.
+    """
+    members = panel_professor_ids(db, defense.id)
+    if not members:
+        return None
+    verdicts = [verdict for verdict in panel_verdicts(db, defense.id) if verdict.professor_id in members]
+    if len(verdicts) < len(members):
+        return None
+
+    accepted = [item for item in verdicts if item.verdict == models.DefenseVerdictType.accept]
+    passed = len(accepted) * 2 > len(members)
+    names = {
+        professor_id: name
+        for professor_id, name in db.query(models.User.id, models.User.name).filter(models.User.id.in_(members)).all()
+    }
+    lines = [f"Panel decision: {len(accepted)} of {len(members)} voted to accept."]
+    for item in verdicts:
+        if item.comments and item.comments.strip():
+            lines.append(f"{names.get(item.professor_id, 'Panel member')}: {item.comments.strip()}")
+    defense.current_status = "accepted" if passed else "rejected"
+    defense.outcome_comments = "\n".join(lines)
+    defense.outcome_recorded_at = datetime.now(timezone.utc)
+    defense.outcome_recorded_by = None
+    # A defense that wasn't passed has to be defended again — there is no admin
+    # left in this flow to decide otherwise.
+    defense.requires_redefense = not passed
+    return defense
 
 
 def is_panel_member(db, user_id, **target) -> bool:
@@ -190,8 +268,20 @@ def is_panel_member(db, user_id, **target) -> bool:
 
 
 def validate_panel(db, professor_ids, department_id) -> None:
-    """Every panel member must be a professor in the department with a professor profile."""
-    for professor_id in set(professor_ids):
+    """Every panel member must be a professor in the department with a professor profile.
+
+    The panel also has to be an odd size. That's how ties are avoided: the
+    outcome is a straight majority of the members' own verdicts, with no chair,
+    no casting vote and no admin to break a deadlock.
+    """
+    unique_ids = set(professor_ids)
+    if not unique_ids:
+        raise Exception("A defense needs a panel — assign an odd number of professors to it")
+    if len(unique_ids) % 2 == 0:
+        raise Exception(
+            f"A panel of {len(unique_ids)} could tie — assign an odd number of panel members to avoid a tied vote"
+        )
+    for professor_id in unique_ids:
         professor = db.get(models.User, professor_id)
         if not professor or getattr(professor.role, "value", professor.role) != "professor" or professor.department_id != department_id:
             raise Exception("Panel members must be professors in your department")

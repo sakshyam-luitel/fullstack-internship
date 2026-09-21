@@ -1,11 +1,13 @@
 """Fixed supervision-capacity and grouping rules for the three degree levels.
 
 Defined once, here, so the college can retune the numbers later without
-hunting through resolvers. Bachelor's is a 1-3 student group (max 1 group per
-professor); Master's and PhD are individual (max 5 / 4 students per
-professor respectively); 3 + 5 + 4 = 12 is also enforced as an independent
-overall ceiling, since a later retune of the per-level numbers could put them
-out of sync with the total.
+hunting through resolvers. A professor supervises at most one active project
+per degree level - one Bachelor's group, one Master's project and one PhD
+project at a time - so no professor's attention is split across two projects
+at the same level. Bachelor's is a 1-3 student group; Master's and PhD are
+individual. MAX_TOTAL_STUDENTS_PER_PROFESSOR is enforced independently, since
+a later retune of the per-level numbers could put them out of sync with the
+total.
 """
 
 from . import models
@@ -16,10 +18,10 @@ DEGREE_LEVEL_NAMES = {
     models.DegreeLevel.phd: "PhD",
 }
 
-MAX_BACHELOR_GROUPS_PER_PROFESSOR = 1
+# One active project per degree level, per professor. A Bachelor's group counts
+# as a single project however many students are in it.
+MAX_PROJECTS_PER_LEVEL_PER_PROFESSOR = 1
 MAX_BACHELOR_GROUP_SIZE = 3
-MAX_MASTERS_STUDENTS_PER_PROFESSOR = 5
-MAX_PHD_STUDENTS_PER_PROFESSOR = 4
 MAX_TOTAL_STUDENTS_PER_PROFESSOR = 12
 
 # A proposal counts toward a professor's active load unless it's been rejected
@@ -91,6 +93,15 @@ def resolve_student_degree_program(db, department_id, degree_program_id=None, de
 
 
 def _active_supervised_proposals(db, supervisor_id, exclude_proposal_id=None):
+    """The work a professor is currently carrying, for the cohort now running.
+
+    Capacity is per batch: once a cohort is archived, the projects supervised
+    under it stop counting, so every professor starts the new intake with their
+    full allowance. Without that, a professor at their limit in one year could
+    never take a student again.
+    """
+    from .utils import active_batch_id, batch_student_ids
+
     query = db.query(models.Proposals).filter(
         models.Proposals.supervisor_id == supervisor_id,
         models.Proposals.status.in_(ACTIVE_SUPERVISION_STATUSES),
@@ -98,7 +109,21 @@ def _active_supervised_proposals(db, supervisor_id, exclude_proposal_id=None):
     )
     if exclude_proposal_id is not None:
         query = query.filter(models.Proposals.id != exclude_proposal_id)
-    return query.all()
+    batch_id = active_batch_id(db)
+    if batch_id is None:
+        return query.all()
+    # A proposal belongs to the cohort of the student who submitted it. One with no
+    # profile yet hasn't been filed under any cohort, so it counts against the
+    # current one rather than escaping the limit.
+    current = batch_student_ids(db, batch_id)
+    filed = {
+        row[0]
+        for row in db.query(models.StudentProfiles.user_id).filter(models.StudentProfiles.batch_id.isnot(None)).all()
+    }
+    return [
+        proposal for proposal in query.all()
+        if proposal.submitted_by in current or proposal.submitted_by not in filed
+    ]
 
 
 def _proposal_student_count(db, proposal_id):
@@ -147,18 +172,14 @@ def can_assign_supervisor(db, professor_id, degree_level, proposal_size=1, exclu
         proposal_level = get_degree_level(db, owner)
         active_by_level.setdefault(proposal_level, []).append(proposal)
 
-    if degree_level == models.DegreeLevel.bachelors:
-        active_groups = len(active_by_level.get(degree_level, []))
-        if active_groups >= MAX_BACHELOR_GROUPS_PER_PROFESSOR:
-            return False, f"{supervisor.name} is already supervising a Bachelor's group"
-    elif degree_level == models.DegreeLevel.masters:
-        active_students = sum(_proposal_student_count(db, p.id) for p in active_by_level.get(degree_level, []))
-        if active_students + proposal_size > MAX_MASTERS_STUDENTS_PER_PROFESSOR:
-            return False, f"{supervisor.name} is already supervising the maximum of {MAX_MASTERS_STUDENTS_PER_PROFESSOR} Master's students"
-    elif degree_level == models.DegreeLevel.phd:
-        active_students = sum(_proposal_student_count(db, p.id) for p in active_by_level.get(degree_level, []))
-        if active_students + proposal_size > MAX_PHD_STUDENTS_PER_PROFESSOR:
-            return False, f"{supervisor.name} is already supervising the maximum of {MAX_PHD_STUDENTS_PER_PROFESSOR} PhD students"
+    if degree_level is not None:
+        projects_at_level = len(active_by_level.get(degree_level, []))
+        if projects_at_level >= MAX_PROJECTS_PER_LEVEL_PER_PROFESSOR:
+            level_name = DEGREE_LEVEL_NAMES.get(degree_level, str(degree_level))
+            subject = "group" if degree_level == models.DegreeLevel.bachelors else "project"
+            if MAX_PROJECTS_PER_LEVEL_PER_PROFESSOR == 1:
+                return False, f"{supervisor.name} is already supervising a {level_name} {subject} — a professor can supervise only one project per degree level"
+            return False, f"{supervisor.name} is already supervising the maximum of {MAX_PROJECTS_PER_LEVEL_PER_PROFESSOR} {level_name} {subject}s"
 
     total_active = sum(_proposal_student_count(db, p.id) for p in active_proposals)
     if total_active + proposal_size > MAX_TOTAL_STUDENTS_PER_PROFESSOR:

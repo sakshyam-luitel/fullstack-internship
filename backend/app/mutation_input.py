@@ -204,22 +204,29 @@ class DefenseIdInput:
     id : uuid.UUID
 
 @strawberry.input
-class DefensePanelInput:
+class DefenseVerdictInput:
+    """One panel member's own vote. The panel's majority settles the outcome."""
     defense_id: uuid.UUID
-    professor_id: uuid.UUID
+    # "accept" or "reject".
+    verdict: str
+    # The feedback the student is given once the outcome is settled. Required to reject.
+    comments: Optional[str] = None
 
 @strawberry.input
-class DefenseOutcomeInput:
-    defense_id: uuid.UUID
-    status: str  # "accepted" | "rejected"
-    comments: Optional[str] = None
+class ResetToNewBatchInput:
+    """Archive the cohort that just finished and start the next one."""
+    new_batch_label: str
+    # Archive even though a phase is still open. Super admins only.
+    force: bool = False
 
 @strawberry.input
 class ResearchPhaseInput:
     phase_type: str  # proposal | progress_report | defense
     degree_level: str  # bachelors | masters | phd
     label: str
-    sequence_number: int
+    # Omit to take the next free step for this degree level in the current batch,
+    # which is what the admin wants nearly every time.
+    sequence_number: Optional[int] = None
     opens_at: Optional[datetime.datetime] = None
     deadline_at: Optional[datetime.datetime] = None
     defense_date: Optional[datetime.datetime] = None
@@ -237,6 +244,11 @@ class ResearchPhaseUpdateInput:
 
 @strawberry.input
 class ResearchPhaseDeleteInput:
+    id: uuid.UUID
+
+@strawberry.input
+class ResearchPhaseIdInput:
+    """The phase an admin is opening or closing."""
     id: uuid.UUID
 
 @strawberry.input

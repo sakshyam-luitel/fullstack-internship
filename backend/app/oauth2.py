@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(database.ENV_FILE)
 
 SECRET_KEY = os.getenv('SECRET_KEY')
 ALGORITHM = "HS256"

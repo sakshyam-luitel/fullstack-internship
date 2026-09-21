@@ -33,6 +33,33 @@ class PhaseType(Enum):
 
 
 @strawberry.enum
+class BatchStatus(Enum):
+    active = "active"
+    archived = "archived"
+
+
+@strawberry.enum
+class DefenseVerdictType(Enum):
+    accept = "accept"
+    reject = "reject"
+
+
+@strawberry.enum
+class PhaseStatus(Enum):
+    """Where a phase is in its life, decided by the admin and never by the clock.
+
+    A phase is drawn up as `pending`, so a whole term's timeline can be laid out
+    in advance; `open_research_phase` starts it, and only then can students
+    submit; `close_research_phase` ends it. One phase per degree level may be
+    open at a time, and only in step order (research_workflow.validate_phase_can_open).
+    A deadline passing does not close anything — the admin does that.
+    """
+    pending = "pending"
+    open = "open"
+    closed = "closed"
+
+
+@strawberry.enum
 class SubmissionEntityType(Enum):
     proposal = "proposal"
     progress_report = "progress_report"
@@ -44,6 +71,8 @@ class SubmissionStatus(Enum):
     pending = "pending"
     accepted = "accepted"
     rejected = "rejected"
+    # An admin removed the submission. Soft delete, so the row and its file stay.
+    deleted = "deleted"
 
 
 # Proposals intentionally retain a string column for backwards compatibility with
@@ -74,6 +103,36 @@ class User(Base):
     # program) — StudentProfiles.degree_program_id is auto-populated from this when the
     # profile is created automatically, so it never needs a separate manual step.
     degree_program_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("degreeprograms.id"), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class Batch(Base):
+    """One cohort's run through the pipeline — an academic year's intake.
+
+    Exactly one batch is active at a time across the system; the rest are
+    archived and stay fully queryable. Students join the batch that is active
+    when their profile is made, and phases are scheduled against a batch, so
+    archiving one takes a whole cohort's timeline out of the day-to-day view
+    without touching a single row of it. `reset_to_new_batch` is the only thing
+    that archives a batch and starts the next.
+    """
+    __tablename__ = "batches"
+    # Only one batch may be active. A partial unique index says so in the database
+    # itself, so a race between two admins can't produce two active cohorts.
+    __table_args__ = (
+        Index(
+            "batches_single_active_key", "status",
+            unique=True, postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+    label = Column(String, nullable=False)
+    status: Mapped[BatchStatus] = mapped_column(SAEnum(BatchStatus), nullable=False, server_default=text("'active'"))
+    started_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+    archived_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    archived_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
@@ -120,6 +179,9 @@ class StudentProfiles(Base):
     # enrollment issues one. Postgres allows unlimited NULLs under a plain UNIQUE
     # constraint, so uniqueness is only enforced once a value is actually set.
     roll_number = Column(String, nullable=True, unique=True)
+    # The cohort this student joined with. Defaulted to whichever batch is active
+    # when the profile is made (utils.active_batch_id), so nobody assigns it by hand.
+    batch_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("batches.id"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
@@ -302,6 +364,16 @@ class Defenses(Base):
     # The phase owns the shared calendar day. This is only the individual slot.
     scheduled_time = Column(Time, nullable=True)
     current_status = Column(String, nullable=False, server_default=text("'pending'"))
+    # The verdict, recorded by the department admin once the defense day is over:
+    # current_status "accepted" means defended, "rejected" means not defended. The
+    # feedback below is what the student is told, and is required when they fail.
+    outcome_comments = Column(String, nullable=True)
+    outcome_recorded_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    outcome_recorded_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
+    # Set when a failed defense has to be held again. The failed row stays on
+    # record: schedule_defense skips rejected defenses, so the redefense is
+    # planned as a new row.
+    requires_redefense = Column(Boolean, nullable=False, server_default=text("false"))
 
 
 class JournalSubmissions(Base):
@@ -377,7 +449,7 @@ class ResearchPhase(Base):
     # phase's number can be reused.
     __table_args__ = (
         Index(
-            "researchphases_active_sequence_key", "department_id", "degree_level", "sequence_number",
+            "researchphases_active_sequence_key", "batch_id", "department_id", "degree_level", "sequence_number",
             unique=True, postgresql_where=text("deleted_at IS NULL"),
         ),
     )
@@ -394,6 +466,14 @@ class ResearchPhase(Base):
     grace_period_enabled = Column(Boolean, nullable=False, server_default=text("false"))
     created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+    # The admin drives this: pending until they open the phase, closed when they end
+    # it. Submissions are only taken while it is open (research_workflow.is_phase_open).
+    status: Mapped[PhaseStatus] = mapped_column(SAEnum(PhaseStatus), nullable=False, server_default=text("'pending'"))
+    closed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    closed_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
+    # Which cohort's timeline this phase belongs to, so step numbers start over
+    # for each batch and an archived cohort's phases stay out of the current view.
+    batch_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("batches.id"), nullable=True)
     # Soft delete: an ended phase can be removed from every dashboard, while its
     # submissions, history and defenses keep pointing at it.
     deleted_at = Column(TIMESTAMP(timezone=True), nullable=True)
@@ -415,6 +495,25 @@ class SubmissionHistory(Base):
     file_path = Column(String, nullable=True)
     original_filename = Column(String, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class DefenseVerdict(Base):
+    """One panel member's vote on one defense.
+
+    Membership lives in DefensePanel; this is what that member decided. One row
+    per professor per defense (they may change their mind until the last vote
+    lands), and once every member has voted, defenses.finalize_defense settles
+    the outcome by majority — no admin confirms or overrides it.
+    """
+    __tablename__ = "defenseverdicts"
+    __table_args__ = (UniqueConstraint("defense_id", "professor_id", name="defenseverdicts_defense_professor_key"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+    defense_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("defenses.id", ondelete="CASCADE"), nullable=False)
+    professor_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("professorprofile.user_id", ondelete="CASCADE"), nullable=False)
+    verdict: Mapped[DefenseVerdictType] = mapped_column(SAEnum(DefenseVerdictType), nullable=False)
+    comments = Column(String, nullable=True)
+    submitted_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class DefensePanel(Base):

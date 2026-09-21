@@ -100,6 +100,11 @@ class ProposalSchemaUser:
     uploaded_at: Optional[datetime] = None
     phase_id: Optional[uuid.UUID] = None
 
+    # Derived from deleted_at rather than stored twice, so the two can never disagree.
+    @strawberry.field
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
 @strawberry.type
 class ProposalMemberSchema:
     id: uuid.UUID
@@ -130,6 +135,11 @@ class ProposalSchemaAdmin:
     uploaded_at: Optional[datetime] = None
     phase_id: Optional[uuid.UUID] = None
     degree_level: Optional[str] = None
+
+    # Derived from deleted_at rather than stored twice, so the two can never disagree.
+    @strawberry.field
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
 
 @strawberry.type
 class ProposalCandidateSchema:
@@ -179,6 +189,8 @@ class ProgressReportSchema:
     reviewed_by_name: Optional[str] = None
     phase_id: Optional[uuid.UUID] = None
     phase_label: Optional[str] = None
+    # Which round of the series this report belongs to.
+    phase_sequence_number: Optional[int] = None
     deadline_at: Optional[datetime] = None
 
 @strawberry.type
@@ -211,6 +223,14 @@ class DefenseSchema:
     report_document_kind: Optional[str] = None  # "proposals" | "progress-reports" | "papers"
     report_document_id: Optional[uuid.UUID] = None
     report_filename: Optional[str] = None
+    # The verdict once the defense day is over: current_status "accepted" = defended,
+    # "rejected" = not defended, with the admin's feedback for the student.
+    outcome_comments: Optional[str] = None
+    outcome_recorded_at: Optional[datetime] = None
+    outcome_recorded_by_name: Optional[str] = None
+    requires_redefense: bool = False
+    # Whether the defense day has passed, so clients don't re-derive the rule.
+    has_ended: bool = False
 
 @strawberry.type
 class DefenseCandidateSchema:
@@ -245,8 +265,41 @@ class ResearchPhaseSchema:
     is_open: bool
     # True once the deadline (or, for a final defense phase, the defense day) has passed.
     has_ended: bool = False
+    # pending | open | closed — the admin's own decision, never the clock's.
+    status: str = "pending"
+    closed_at: Optional[datetime] = None
+    closed_by: Optional[uuid.UUID] = None
     # Only set by create/update, so the admin can see how many people were told.
     notified_count: Optional[int] = None
+
+@strawberry.type
+class BatchSchema:
+    """One cohort. Exactly one is active; the rest are archived history."""
+    id: uuid.UUID
+    label: str
+    status: str  # active | archived
+    started_at: datetime
+    archived_at: Optional[datetime] = None
+    archived_by_name: Optional[str] = None
+    # Filled in by listings so the admin can see a cohort's size at a glance.
+    student_count: int = 0
+    phase_count: int = 0
+
+@strawberry.type
+class SubmissionEligibilitySchema:
+    """Whether a student may start their next report, and which round it lands in.
+
+    The same rules the mutations enforce, answered before the student tries: the
+    round has to be open, and the round before it has to have been defended.
+    """
+    can_start: bool
+    # Why not, in the student's own words. None when they can start.
+    reason: Optional[str] = None
+    phase_id: Optional[uuid.UUID] = None
+    phase_label: Optional[str] = None
+    sequence_number: Optional[int] = None
+    deadline_at: Optional[datetime] = None
+    defense_date: Optional[datetime] = None
 
 @strawberry.type
 class NotificationSchema:
