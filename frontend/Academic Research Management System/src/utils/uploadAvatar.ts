@@ -1,5 +1,7 @@
-export const API_ORIGIN = "http://10.1.186.127:8000";
 const ENDPOINT = import.meta.env.VITE_API_URL
+// Files, avatars and the REST routes live on the same server as /graphql, so their
+// origin comes from the one VITE_API_URL setting instead of a second hardcoded copy.
+export const API_ORIGIN = new URL(ENDPOINT).origin;
 
 const UPLOAD_PROFILE_IMAGE = `mutation UploadProfileImage($file: Upload!) { uploadProfileImage(file: $file) { avatarUrl } }`;
 
