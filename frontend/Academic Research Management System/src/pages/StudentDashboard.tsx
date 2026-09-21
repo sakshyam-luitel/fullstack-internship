@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CalendarClock,
+  CalendarDays,
   Check,
-  Download,
+  CheckCircle2,
   Eye,
+  Circle,
   FileText,
+  Flag,
+  GraduationCap,
   History,
-  Menu,
+  Home,
+  Hourglass,
+  NotebookPen,
   Pencil,
   Send,
   Users,
@@ -14,19 +20,35 @@ import {
 } from "lucide-react";
 import { gql } from "@apollo/client";
 import { print } from "graphql";
-import { useNavigate } from "react-router-dom";
-import NavigationBar from "../components/NavigationBar";
-import NotificationBell from "../components/NotificationBell";
+import AppShell, { type NavItem } from "../components/AppShell";
 import DefenseNotice from "../components/DefenseNotice";
 import DefenseCard, { type DefenseDetails } from "../components/DefenseCard";
-import { isPastDefense } from "../utils/defenses";
-import { resolveAvatarUrl, uploadAvatarImage } from "../utils/uploadAvatar";
 import {
-  downloadDocumentFile,
-  uploadDocumentFile,
-  viewDocumentFile,
-  type DocumentKind,
-} from "../utils/proposalFile";
+  BlockedReason,
+  Card,
+  DocumentActions,
+  EmptyState,
+  FormError,
+  Modal,
+  ProfileCard,
+  SectionHeader,
+  StatusBadge,
+} from "../components/ui";
+import { useSection } from "../hooks/useSection";
+import { useToast } from "../hooks/useToast";
+import { isPastDefense } from "../utils/defenses";
+import {
+  errorMessage,
+  formatDate,
+  formatDateTime,
+  formatStatus,
+  inputClass,
+  primaryButtonClass,
+  smallPrimaryButtonClass,
+  smallSecondaryButtonClass,
+} from "../utils/format";
+import { resolveAvatarUrl, uploadAvatarImage } from "../utils/uploadAvatar";
+import { uploadDocumentFile, viewDocumentFile } from "../utils/proposalFile";
 import {
   PROPOSAL_SUBMISSION_HISTORY_QUERY,
   RESEARCH_PHASES_QUERY,
@@ -156,28 +178,27 @@ interface GraphQLResult<T> {
   errors?: { message: string }[];
 }
 
-type ResearchTab = "proposal" | "progress" | "final" | "defenses";
-type SubmitIntent = "draft" | "submit";
-
-const statusStyles: Record<string, string> = {
-  approved: "bg-emerald-50 text-emerald-700",
-  accepted: "bg-emerald-50 text-emerald-700",
-  submitted: "bg-blue-50 text-blue-700",
-  rejected: "bg-red-50 text-red-700",
-  changes_requested: "bg-amber-50 text-amber-700",
+const SECTIONS = [
+  "home",
+  "proposal",
+  "progress",
+  "final",
+  "defenses",
+  "profile",
+] as const;
+type Section = (typeof SECTIONS)[number];
+const SECTION_TITLES: Record<Section, string> = {
+  home: "Home",
+  proposal: "Research proposal",
+  progress: "Progress reports",
+  final: "Final submission",
+  defenses: "Defenses",
+  profile: "My profile",
 };
-const formatStatus = (status: string) => status.replace(/_/g, " ");
-const formatDateTime = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-const formatDate = (iso: string) =>
-  new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
-const errorMessage = (error: unknown, fallback: string) =>
-  error instanceof Error ? error.message : fallback;
-const inputClass =
-  "mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100";
+type SubmitIntent = "draft" | "submit";
+const sentenceCase = (text: string) =>
+  text.charAt(0).toUpperCase() + text.slice(1);
+const APPROVED = ["approved", "accepted"];
 
 const ENDPOINT = import.meta.env.VITE_API_URL
 const MY_PROPOSALS = gql`
@@ -516,16 +537,6 @@ function phaseNotice(
       };
 }
 
-function StatusBadge({ status, label }: { status: string; label?: string }) {
-  return (
-    <span
-      className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusStyles[status] ?? "bg-slate-100 text-slate-600"}`}
-    >
-      {label ?? formatStatus(status)}
-    </span>
-  );
-}
-
 function PhaseNotice({
   notice,
 }: {
@@ -584,7 +595,7 @@ function ProgressRoundCard({
           <DefenseNotice key={defense.id} defense={defense} />
         ))}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <DocumentLinks
+        <DocumentActions
           kind="progress-reports"
           entityId={report.id}
           filename={report.originalFilename}
@@ -606,46 +617,6 @@ function ProgressRoundCard({
         )}
       </div>
     </article>
-  );
-}
-
-function Modal({
-  title,
-  subtitle,
-  onClose,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-semibold text-slate-900">{title}</h2>
-            {subtitle && (
-              <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
-            )}
-          </div>
-          <button
-            type="button"
-            aria-label={`Close ${title.toLowerCase()}`}
-            onClick={onClose}
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
   );
 }
 
@@ -746,58 +717,9 @@ function FormActions({
   );
 }
 
-function DocumentLinks({
-  kind,
-  entityId,
-  filename,
-  fallbackName,
-  onError,
-}: {
-  kind: DocumentKind;
-  entityId: string;
-  filename: string | null;
-  fallbackName: string;
-  onError: (message: string) => void;
-}) {
-  if (!filename) return null;
-  return (
-    <span className="flex flex-wrap items-center gap-3 text-xs">
-      <span className="flex min-w-0 items-center gap-1 text-slate-600">
-        <FileText size={14} aria-hidden="true" />
-        <span className="truncate">{filename}</span>
-      </span>
-      <button
-        type="button"
-        onClick={() =>
-          void viewDocumentFile(kind, entityId).catch((error: unknown) =>
-            onError(errorMessage(error, "Unable to open the document.")),
-          )
-        }
-        className="inline-flex items-center gap-1 text-blue-700 hover:underline"
-      >
-        <Eye size={14} aria-hidden="true" /> View
-      </button>
-      <button
-        type="button"
-        onClick={() =>
-          void downloadDocumentFile(
-            kind,
-            entityId,
-            filename ?? fallbackName,
-          ).catch((error: unknown) =>
-            onError(errorMessage(error, "Unable to download the document.")),
-          )
-        }
-        className="inline-flex items-center gap-1 text-blue-700 hover:underline"
-      >
-        <Download size={14} aria-hidden="true" /> Download
-      </button>
-    </span>
-  );
-}
-
 function StudentDashboard() {
-  const navigate = useNavigate();
+  const toast = useToast();
+  const [section, goTo] = useSection(SECTIONS, "home");
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [availableMembers, setAvailableMembers] = useState<Student[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
@@ -812,15 +734,10 @@ function StudentDashboard() {
   );
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [profile, setProfile] = useState<MyProfile | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [isNavigationOpen, setIsNavigationOpen] = useState(false);
-  const [activeView, setActiveView] = useState<"proposals" | "profile">(
-    "proposals",
-  );
-  const [researchTab, setResearchTab] = useState<ResearchTab>("proposal");
+  // Only a failed page load stays on screen; everything else is a toast.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   // One open form at a time; each keeps its own error so failures show inside the dialog.
   const submitIntent = useRef<SubmitIntent>("submit");
@@ -883,11 +800,13 @@ function StudentDashboard() {
       setResearchPhases(phasesResult.researchPhases);
       setProgressEligibility(eligibilityResult.myProgressReportEligibility);
       setFinalEligibility(eligibilityResult.myFinalReportEligibility);
-      setError(null);
+      setLoadError(null);
     } catch (requestError) {
-      setError(
+      setLoadError(
         errorMessage(requestError, "Unable to load your research space."),
       );
+    } finally {
+      setIsLoaded(true);
     }
   };
 
@@ -902,11 +821,11 @@ function StudentDashboard() {
         setCurrentUser(userResult.currentUser);
         setProfile(profileResult.myStudentProfile);
       } catch (requestError) {
-        setError(errorMessage(requestError, "Unable to load your profile."));
+        toast.error(errorMessage(requestError, "Unable to load your profile."));
       }
     };
     void initialize();
-  }, []);
+  }, [toast]);
 
   const resetForm = () => {
     setFormError(null);
@@ -933,7 +852,7 @@ function StudentDashboard() {
     try {
       const doneMessage = await steps();
       closeForms();
-      setNotice(doneMessage);
+      toast.success(doneMessage);
     } catch (submissionError) {
       setFormError(errorMessage(submissionError, fallback));
     } finally {
@@ -1104,7 +1023,7 @@ function StudentDashboard() {
       });
       setSelectedMember("");
       setGroupProposal(null);
-      setNotice("Group invite sent.");
+      toast.success("Group invite sent.");
       await loadResearch();
     } catch (requestError) {
       setFormError(errorMessage(requestError, "Unable to send group invite."));
@@ -1129,7 +1048,6 @@ function StudentDashboard() {
   };
 
   const showHistory = async (proposal: Proposal) => {
-    setError(null);
     try {
       const result = await request<{
         proposalSubmissionHistory: SubmissionHistoryItem[];
@@ -1137,7 +1055,7 @@ function StudentDashboard() {
       setHistory(result.proposalSubmissionHistory);
       setHistoryProposal(proposal);
     } catch (requestError) {
-      setError(
+      toast.error(
         errorMessage(requestError, "Unable to load submission history."),
       );
     }
@@ -1147,19 +1065,22 @@ function StudentDashboard() {
     proposalId: string,
     response: "accepted" | "rejected",
   ) => {
-    setError(null);
     try {
       await request(RESPOND_INVITE, {
         studentInput: { proposalId, status: response },
       });
+      toast.success(
+        response === "accepted"
+          ? "You joined the group."
+          : "Invite declined.",
+      );
       await loadResearch();
     } catch (requestError) {
-      setError(errorMessage(requestError, "Unable to respond to the invite."));
+      toast.error(errorMessage(requestError, "Unable to respond to the invite."));
     }
   };
 
   const handleUploadAvatar = async (file: File) => {
-    setAvatarError(null);
     setIsUploadingAvatar(true);
     try {
       const avatarUrl = await uploadAvatarImage(file);
@@ -1167,14 +1088,15 @@ function StudentDashboard() {
         current ? { ...current, avatarUrl } : current,
       );
       setProfile((current) => (current ? { ...current, avatarUrl } : current));
+      toast.success("Profile photo updated.");
     } catch (uploadError) {
-      setAvatarError(errorMessage(uploadError, "Unable to upload image."));
+      toast.error(errorMessage(uploadError, "Unable to upload image."));
     } finally {
       setIsUploadingAvatar(false);
     }
   };
 
-  const showError = (message: string) => setError(message);
+  const showError = (message: string) => toast.error(message);
   const proposalNotice = phaseNotice(researchPhases, "proposal", "proposal");
   const progressNotice = phaseNotice(
     researchPhases,
@@ -1232,742 +1154,967 @@ function StudentDashboard() {
     ? (proposals.find((proposal) => proposal.id === proposalForm.id) ?? null)
     : null;
 
-  const tabs: { value: ResearchTab; label: string; count: number }[] = [
+  // Accepted members (and the owner) may work on a proposal; a deleted one is read-only.
+  const canActOn = (proposal: Proposal) =>
+    !proposal.deletedAt &&
+    (proposal.submittedBy === currentUserId ||
+      proposal.groupMembers.some(
+        (member) => member.id === currentUserId && member.status === "accepted",
+      ));
+  const activeProposal =
+    proposals.find(
+      (proposal) =>
+        !proposal.deletedAt &&
+        proposal.status !== "rejected" &&
+        proposal.status !== "withdrawn",
+    ) ?? null;
+  const proposalNeedingChanges = proposals.find(
+    (proposal) =>
+      proposal.status === "changes_requested" && canActOn(proposal),
+  );
+  const draftProposal = proposals.find(
+    (proposal) => proposal.status === "draft" && canActOn(proposal),
+  );
+  const reportNeedingWork = progressReports.find(
+    (report) =>
+      report.status === "draft" || report.status === "changes_requested",
+  );
+  const thesisDue = finalDefenses.find(
+    (defense) =>
+      !defense.submissionConfirmed && defense.currentStatus === "pending",
+  );
+  const approvedRounds = progressRounds.filter(
+    (round) => round.report && APPROVED.includes(round.report.status),
+  ).length;
+  const finalDefenseAccepted = finalDefenses.some(
+    (defense) => defense.currentStatus === "accepted",
+  );
+  const upcomingDefenses = [...defenses]
+    .filter(
+      (defense) =>
+        !isPastDefense(defense) && defense.currentStatus === "pending",
+    )
+    .sort(
+      (first, second) =>
+        new Date(first.defenseDate).getTime() -
+        new Date(second.defenseDate).getTime(),
+    );
+  const timeline = [...researchPhases].sort(
+    (first, second) => first.sequenceNumber - second.sequenceNumber,
+  );
+
+  // The research journey as four steps. The first one that isn't done is where the student is.
+  const stepDone = {
+    proposal: paper !== null,
+    progress:
+      paper !== null &&
+      (paper.finalReportStatus !== null ||
+        (progressRounds.length > 0 &&
+          approvedRounds === progressRounds.length)),
+    final: paper?.finalReportStatus === "approved",
+    defenses: finalDefenseAccepted,
+  };
+  const currentStep = (
+    ["proposal", "progress", "final", "defenses"] as const
+  ).find((key) => !stepDone[key]);
+  const steps: { key: Section; label: string; detail: string; done: boolean }[] =
+    [
+      {
+        key: "proposal",
+        label: "Proposal",
+        done: stepDone.proposal,
+        detail: stepDone.proposal
+          ? "Approved"
+          : activeProposal
+            ? formatStatus(activeProposal.status)
+            : "Not started",
+      },
+      {
+        key: "progress",
+        label: "Progress reports",
+        done: stepDone.progress,
+        detail:
+          progressRounds.length > 0
+            ? `${approvedRounds} of ${progressRounds.length} approved`
+            : "No rounds scheduled yet",
+      },
+      {
+        key: "final",
+        label: "Final report",
+        done: stepDone.final,
+        detail: paper?.finalReportStatus
+          ? formatStatus(paper.finalReportStatus)
+          : "Not submitted",
+      },
+      {
+        key: "defenses",
+        label: "Final defense",
+        done: stepDone.defenses,
+        detail: finalDefenseAccepted
+          ? "Defended"
+          : finalDefenses.length > 0
+            ? `Scheduled ${formatDate(finalDefenses[0].defenseDate)}`
+            : "Not scheduled",
+      },
+    ];
+
+  // The single most useful thing the student can do now, or what they're waiting on.
+  type NextStep = {
+    title: string;
+    description?: string | null;
+    actionLabel?: string;
+    onAction?: () => void;
+    waiting?: boolean;
+  };
+  const nextStep: NextStep = (() => {
+    if (invites.length > 0)
+      return {
+        title: "You've been invited to join a research group",
+        description: `${invites[0].ownerName} invited you to join "${invites[0].title}".`,
+        actionLabel: "Respond to invite",
+        onAction: () => goTo("proposal"),
+      };
+    if (proposalNeedingChanges)
+      return {
+        title: "Your supervisor asked for changes to your proposal",
+        description: proposalNeedingChanges.reviewComment
+          ? `"${proposalNeedingChanges.reviewComment}"`
+          : null,
+        actionLabel: "Address feedback",
+        onAction: () => openFeedbackForm(proposalNeedingChanges),
+      };
+    if (draftProposal)
+      return {
+        title: "Finish and submit your proposal",
+        description: `"${draftProposal.title}" is saved as a draft.`,
+        actionLabel: "Continue & submit",
+        onAction: () => openProposalForm(draftProposal),
+      };
+    if (!activeProposal)
+      return canStartProposal
+        ? {
+            title: "Write your research proposal",
+            description: proposalNotice.text,
+            actionLabel: "New proposal",
+            onAction: () => openProposalForm(null),
+          }
+        : {
+            title: "Proposal submissions aren't open yet",
+            description: proposalNotice.text,
+            waiting: true,
+          };
+    if (!paper)
+      return {
+        title: "Your proposal is being reviewed",
+        description: activeProposal.supervisorName
+          ? `${activeProposal.supervisorName} is reviewing "${activeProposal.title}".`
+          : "Your department will assign a supervisor to review it.",
+        waiting: true,
+      };
+    if (reportNeedingWork)
+      return {
+        title:
+          reportNeedingWork.status === "draft"
+            ? "Finish your progress report"
+            : "Revise your progress report",
+        description:
+          reportNeedingWork.reviewComment
+            ? `"${reportNeedingWork.reviewComment}"`
+            : (reportNeedingWork.phaseLabel ?? null),
+        actionLabel:
+          reportNeedingWork.status === "draft"
+            ? "Continue & submit"
+            : "Revise & resubmit",
+        onAction: () => openReportForm(reportNeedingWork),
+      };
+    if (thesisDue)
+      return {
+        title: "Submit your final thesis",
+        description: `Your final defense is on ${formatDate(thesisDue.defenseDate)}.`,
+        actionLabel: "Submit final thesis",
+        onAction: () => {
+          resetForm();
+          setThesisDefense(thesisDue);
+        },
+      };
+    if (progressEligibility?.canStart)
+      return {
+        title: `Start ${progressEligibility.phaseLabel ?? "your next progress report"}`,
+        description: progressEligibility.deadlineAt
+          ? `Deadline: ${formatDateTime(progressEligibility.deadlineAt)}`
+          : null,
+        actionLabel: "Start report",
+        onAction: () => openReportForm(null),
+      };
+    if (canSubmitFinalReport && finalEligibility?.canStart)
+      return {
+        title: paper.finalReportStatus
+          ? "Resubmit your final report"
+          : "Submit your final report",
+        description: paper.finalReportReviewComment
+          ? `"${paper.finalReportReviewComment}"`
+          : "Your supervisor reviews it before your final defense is scheduled.",
+        actionLabel: "Submit final report",
+        onAction: () => {
+          resetForm();
+          setIsFinalReportFormOpen(true);
+        },
+      };
+    if (finalDefenseAccepted)
+      return {
+        title: "Congratulations, your research is complete",
+        description: "Your final defense was accepted.",
+        waiting: true,
+      };
+    if (paper.finalReportStatus === "submitted")
+      return {
+        title: "Your final report is being reviewed",
+        description: `${paper.supervisorName ?? "Your supervisor"} will review it.`,
+        waiting: true,
+      };
+    if (paper.finalReportStatus === "approved")
+      return {
+        title: upcomingDefenses.length
+          ? "Prepare for your final defense"
+          : "Your final defense will be scheduled soon",
+        description: upcomingDefenses.length
+          ? `On ${formatDate(upcomingDefenses[0].defenseDate)}.`
+          : "Your department plans the date and panel.",
+        waiting: true,
+      };
+    if (progressReports.some((report) => report.status === "submitted"))
+      return {
+        title: "Your progress report is being reviewed",
+        description: `${paper.supervisorName ?? "Your supervisor"} will review it.`,
+        waiting: true,
+      };
+    return {
+      title: "Nothing to do right now",
+      description:
+        progressEligibility?.reason ??
+        finalEligibility?.reason ??
+        "You'll be notified when the next phase opens.",
+      waiting: true,
+    };
+  })();
+
+  const nav: NavItem[] = [
+    { key: "home", label: "Home", icon: Home },
     {
-      value: "proposal",
+      key: "proposal",
       label: "Proposal",
-      count:
+      icon: NotebookPen,
+      badge:
         proposals.filter((proposal) => proposal.status === "changes_requested")
           .length + invites.length,
     },
     {
-      value: "progress",
+      key: "progress",
       label: "Progress reports",
-      count: progressReports.filter(
+      icon: FileText,
+      badge: progressReports.filter(
         (report) =>
           report.status === "draft" || report.status === "changes_requested",
       ).length,
     },
     {
-      value: "final",
+      key: "final",
       label: "Final submission",
-      count:
+      icon: GraduationCap,
+      badge:
         (paper?.finalReportStatus === "changes_requested" ? 1 : 0) +
         finalDefenses.filter((defense) => !defense.submissionConfirmed).length,
     },
     {
-      value: "defenses",
+      key: "defenses",
       label: "Defenses",
-      count: defenses.filter(
-        (defense) =>
-          !isPastDefense(defense) && defense.currentStatus === "pending",
-      ).length,
+      icon: CalendarDays,
+      badge: upcomingDefenses.length,
     },
   ];
 
   const noPaperState = (what: string) => (
-    <div className="mt-6 rounded-xl border border-dashed border-slate-300 p-8 text-center">
-      <p className="text-sm font-medium text-slate-700">
-        {what} open up after your proposal is approved
-      </p>
-      <p className="mt-1 text-sm text-slate-500">
-        Once your supervisor approves the proposal it becomes your research
-        paper, and you can submit {what.toLowerCase()} here.
-      </p>
-    </div>
+    <EmptyState title={`${what} open up after your proposal is approved`}>
+      Once your supervisor approves the proposal it becomes your research
+      paper, and you can submit {what.toLowerCase()} here.
+    </EmptyState>
   );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans">
-      <NavigationBar
-        open={isNavigationOpen}
-        onClose={() => setIsNavigationOpen(false)}
-        role="student"
-        onProfile={() => setActiveView("profile")}
-        onResearchSpace={() => setActiveView("proposals")}
-        onLogout={() => {
-          localStorage.clear();
-          navigate("/login");
+    <>
+      <AppShell
+        roleLabel="Student workspace"
+        nav={nav}
+        active={section}
+        title={SECTION_TITLES[section]}
+        subtitle={
+          paper && section !== "profile"
+            ? `${paper.title} · Supervisor: ${paper.supervisorName ?? "not assigned"}`
+            : undefined
+        }
+        user={{
+          name: currentUser?.name,
+          email: currentUser?.email,
+          avatarUrl: resolveAvatarUrl(currentUser?.avatarUrl),
         }}
-        activeView={activeView}
-        avatarUrl={resolveAvatarUrl(currentUser?.avatarUrl)}
-        userName={currentUser?.name}
         onUploadAvatar={(file) => void handleUploadAvatar(file)}
         isUploadingAvatar={isUploadingAvatar}
-        avatarError={avatarError}
-      />
-      <div className="m-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50">
-        <header className="flex min-h-20 items-center justify-between border-b border-slate-200 px-6 py-5">
-          <div className="flex items-center gap-3">
+      >
+        {loadError && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+            {loadError}
             <button
               type="button"
-              aria-label="Open navigation menu"
-              aria-expanded={isNavigationOpen}
-              onClick={() => setIsNavigationOpen(true)}
-              className="flex size-10 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 md:hidden"
+              onClick={() => void loadResearch()}
+              className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium hover:bg-red-100"
             >
-              <Menu size={20} aria-hidden="true" />
+              Try again
             </button>
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-blue-600">
-                Student workspace
-              </p>
-              <h1 className="mt-1 font-serif text-2xl text-slate-900">
-                {activeView === "profile" ? "My profile" : "Research space"}
-              </h1>
-            </div>
           </div>
-          <NotificationBell />
-        </header>
-        <div className="min-h-0 w-full flex-1 overflow-auto">
-          {activeView === "profile" ? (
-            <section className="p-6">
-              <div className="max-w-2xl rounded-2xl border border-slate-200 bg-slate-50 p-6">
-                <p className="text-xs font-medium uppercase tracking-[0.2em] text-blue-600">
-                  Account profile
+        )}
+
+        {section === "profile" && (
+          <ProfileCard
+            name={profile?.name ?? currentUser?.name ?? "Student"}
+            avatarUrl={resolveAvatarUrl(profile?.avatarUrl)}
+            fields={[
+              { label: "Email", value: profile?.email ?? currentUser?.email ?? "—" },
+              { label: "Roll number", value: profile?.rollNumber ?? "Not assigned" },
+              { label: "Department", value: profile?.departmentName ?? "Not assigned" },
+              { label: "Degree program", value: profile?.degreeProgramName ?? "Not assigned" },
+              { label: "Supervisor", value: profile?.supervisorName ?? "Not assigned" },
+              {
+                label: "Status",
+                value: (
+                  <span className="capitalize">
+                    {profile?.status ?? "Not available"}
+                  </span>
+                ),
+              },
+            ]}
+          />
+        )}
+
+        {section === "home" &&
+          (!isLoaded ? (
+            <p className="text-sm text-slate-500">Loading your research...</p>
+          ) : (
+            <div className="space-y-6">
+              <Card>
+                <ol className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  {steps.map((step, index) => {
+                    const isCurrent = step.key === currentStep;
+                    return (
+                      <li key={step.key}>
+                        <button
+                          type="button"
+                          onClick={() => goTo(step.key)}
+                          aria-current={isCurrent ? "step" : undefined}
+                          className={`flex h-full w-full items-start gap-3 rounded-lg border p-3 text-left transition hover:border-blue-400 ${
+                            isCurrent
+                              ? "border-blue-500 bg-blue-50"
+                              : "border-slate-200"
+                          }`}
+                        >
+                          {step.done ? (
+                            <CheckCircle2
+                              size={22}
+                              aria-hidden="true"
+                              className="shrink-0 text-emerald-600"
+                            />
+                          ) : isCurrent ? (
+                            <span className="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
+                              {index + 1}
+                            </span>
+                          ) : (
+                            <Circle
+                              size={22}
+                              aria-hidden="true"
+                              className="shrink-0 text-slate-300"
+                            />
+                          )}
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold text-slate-900">
+                              {step.label}
+                            </span>
+                            <span className="block text-xs text-slate-500">
+                              {step.done ? "Done" : sentenceCase(step.detail)}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </Card>
+
+              <div
+                className={`rounded-xl border p-5 shadow-sm ${nextStep.waiting ? "border-slate-200 bg-white" : "border-blue-200 bg-blue-50"}`}
+              >
+                <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-blue-700">
+                  {nextStep.waiting ? (
+                    <Hourglass size={14} aria-hidden="true" />
+                  ) : (
+                    <Flag size={14} aria-hidden="true" />
+                  )}
+                  {nextStep.waiting ? "Status" : "Your next step"}
                 </p>
-                <div className="mt-3 flex items-center gap-4">
-                  <div className="flex size-16 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-200 text-xl font-semibold uppercase text-slate-600">
-                    {profile?.avatarUrl ? (
-                      <img
-                        src={resolveAvatarUrl(profile.avatarUrl) ?? undefined}
-                        alt="Profile"
-                        className="size-full object-cover"
-                      />
-                    ) : (
-                      (profile?.name.trim()?.[0] ?? "?")
-                    )}
-                  </div>
-                  <h2 className="text-2xl font-semibold text-slate-900">
-                    {profile?.name ?? "Student"}
-                  </h2>
-                </div>
-                {profile ? (
-                  <dl className="mt-6 grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Email
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.email}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Roll number
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.rollNumber ?? "Not assigned"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Department
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.departmentName ?? "Not assigned"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Degree program
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.degreeProgramName ?? "Not assigned"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Supervisor
-                      </dt>
-                      <dd className="mt-1 text-sm text-slate-700">
-                        {profile.supervisorName ?? "Not assigned"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-xs uppercase tracking-wide text-slate-400">
-                        Status
-                      </dt>
-                      <dd className="mt-1 text-sm capitalize text-slate-700">
-                        {profile.status ?? "Not available"}
-                      </dd>
-                    </div>
-                  </dl>
-                ) : (
-                  <p className="mt-4 text-sm text-slate-500">
-                    Profile details are unavailable.
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">
+                  {nextStep.title}
+                </h2>
+                {nextStep.description && (
+                  <p className="mt-1 text-sm text-slate-600">
+                    {nextStep.description}
                   </p>
                 )}
-              </div>
-            </section>
-          ) : (
-            <section className="p-6">
-              <div
-                className="flex flex-wrap gap-2 border-b border-slate-200 pb-4"
-                role="tablist"
-                aria-label="Research stages"
-              >
-                {tabs.map((item) => (
+                {nextStep.actionLabel && nextStep.onAction && (
                   <button
-                    key={item.value}
                     type="button"
-                    role="tab"
-                    aria-selected={researchTab === item.value}
-                    onClick={() => {
-                      setResearchTab(item.value);
-                      setNotice(null);
-                      setError(null);
-                    }}
-                    className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium ${researchTab === item.value ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                    onClick={nextStep.onAction}
+                    className={`mt-4 ${primaryButtonClass}`}
                   >
-                    {item.label}
-                    {item.count > 0 && (
-                      <span
-                        className={`rounded-full px-1.5 text-xs ${researchTab === item.value ? "bg-white/25 text-white" : "bg-amber-100 text-amber-800"}`}
-                      >
-                        {item.count}
-                      </span>
-                    )}
+                    <Send size={16} aria-hidden="true" />
+                    {nextStep.actionLabel}
                   </button>
-                ))}
+                )}
               </div>
-              {paper && (
-                <p className="mt-4 text-sm text-slate-500">
-                  Research paper:{" "}
-                  <span className="font-medium text-slate-700">
-                    {paper.title}
-                  </span>{" "}
-                  · Supervisor: {paper.supervisorName ?? "not assigned"}
-                </p>
-              )}
-              {notice && (
-                <p className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
-                  {notice}
-                </p>
-              )}
-              {error && (
-                <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                  {error}
-                </p>
-              )}
 
-              {researchTab === "proposal" && (
-                <>
-                  {invites.length > 0 && (
-                    <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
-                      <h2 className="text-sm font-semibold text-blue-900">
-                        Group invite requests
-                      </h2>
-                      <p className="mt-0.5 text-xs text-blue-700">
-                        Respond before the owner submits their proposal.
-                      </p>
-                      <ul className="mt-3 space-y-2">
-                        {invites.map((invite) => (
-                          <li
-                            key={invite.proposalId}
-                            className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm shadow-sm"
-                          >
-                            <span>
-                              <span className="font-medium text-slate-800">
-                                {invite.ownerName}
-                              </span>{" "}
-                              invited you to join "{invite.title}"
-                            </span>
-                            <span className="flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  void respondToInvite(
-                                    invite.proposalId,
-                                    "accepted",
-                                  )
-                                }
-                                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
-                              >
-                                <Check size={14} aria-hidden="true" /> Accept
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  void respondToInvite(
-                                    invite.proposalId,
-                                    "rejected",
-                                  )
-                                }
-                                className="inline-flex items-center gap-1 rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
-                              >
-                                <X size={14} aria-hidden="true" /> Decline
-                              </button>
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-                    <div>
-                      <h2 className="text-lg font-medium text-slate-800">
-                        Research proposal
-                      </h2>
-                      <p className="text-sm text-slate-500">
-                        Write your proposal, attach the PDF and submit it for
-                        review.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={!canStartProposal}
-                      title={
-                        hasActiveProposal
-                          ? "You already have an active proposal."
-                          : undefined
-                      }
-                      onClick={() => openProposalForm(null)}
-                      className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <FileText size={16} aria-hidden="true" /> New proposal
-                    </button>
-                  </div>
-                  <PhaseNotice notice={proposalNotice} />
-                  {hasRejectedProposal && !hasActiveProposal && (
-                    <p className="mt-2 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800">
-                      Your previous proposal was rejected. You can submit a new
-                      proposal, even if the proposal deadline has passed.
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Card>
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Upcoming defenses
+                  </h3>
+                  {upcomingDefenses.length === 0 ? (
+                    <p className="mt-2 text-sm text-slate-500">
+                      Nothing scheduled. Your department announces defenses
+                      here and in your notifications.
                     </p>
-                  )}
-                  <div className="mt-4 space-y-3">
-                    {proposals.length === 0 && (
-                      <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-                        You haven't created a proposal yet.
-                      </p>
-                    )}
-                    {proposals.map((proposal) => {
-                      const isOwner = proposal.submittedBy === currentUserId;
-                      const isMember =
-                        isOwner ||
-                        proposal.groupMembers.some(
-                          (member) =>
-                            member.id === currentUserId &&
-                            member.status === "accepted",
-                        );
-                      const canAct = isMember && !proposal.deletedAt;
-                      return (
-                        <article
-                          key={proposal.id}
-                          className="rounded-xl border border-slate-200 p-4"
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <h3 className="font-medium text-slate-900">
-                                {proposal.title}
-                              </h3>
-                              <p className="mt-0.5 text-xs text-slate-500">
-                                {isOwner
-                                  ? "Your proposal"
-                                  : `By ${proposal.submittedByName ?? "a teammate"}`}{" "}
-                                · Supervisor:{" "}
-                                {proposal.supervisorName ?? "not assigned yet"}
-                              </p>
-                            </div>
-                            <span className="flex items-center gap-1">
-                              <StatusBadge status={proposal.status} />
-                              {proposal.deletedAt && (
-                                <StatusBadge status="deleted" label="Deleted" />
-                              )}
-                            </span>
-                          </div>
-                          <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-600">
-                            <Users size={14} aria-hidden="true" />
-                            {[
-                              proposal.submittedByName ?? "Owner",
-                              ...proposal.groupMembers.map(
-                                (member) =>
-                                  `${member.name}${member.status !== "accepted" ? ` (${member.status})` : ""}`,
-                              ),
-                            ].join(", ")}
-                          </p>
-                          {proposal.reviewComment && (
-                            <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                              {proposal.reviewedByName
-                                ? `${proposal.reviewedByName}: `
-                                : ""}
-                              "{proposal.reviewComment}"
-                            </p>
-                          )}
-                          {proposal.studentResponse && (
-                            <p className="mt-2 text-xs text-blue-700">
-                              {proposal.respondedByName
-                                ? `${proposal.respondedByName} replied: `
-                                : "Reply: "}
-                              "{proposal.studentResponse}"
-                            </p>
-                          )}
-                          {proposal.deletedAt && (
-                            <p className="mt-2 text-xs text-slate-400">
-                              Deleted by {proposal.deletedByName ?? "an admin"}{" "}
-                              on {formatDate(proposal.deletedAt)}
-                            </p>
-                          )}
-                          {defenses
-                            .filter(
-                              (defense) => defense.proposalId === proposal.id,
-                            )
-                            .map((defense) => (
-                              <DefenseNotice
-                                key={defense.id}
-                                defense={defense}
-                              />
-                            ))}
-                          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                            <DocumentLinks
-                              kind="proposals"
-                              entityId={proposal.id}
-                              filename={proposal.originalFilename}
-                              fallbackName="proposal.pdf"
-                              onError={showError}
-                            />
-                            {canAct && (
-                              <span className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => void showHistory(proposal)}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                                >
-                                  <History size={14} aria-hidden="true" />{" "}
-                                  History
-                                </button>
-                                {proposal.status === "draft" && (
-                                  <>
-                                    {isGroupLevel && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setFormError(null);
-                                          setSelectedMember("");
-                                          setGroupProposal(proposal);
-                                        }}
-                                        className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                                      >
-                                        <Users size={14} aria-hidden="true" />{" "}
-                                        Group
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() => openProposalForm(proposal)}
-                                      className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-                                    >
-                                      <Pencil size={14} aria-hidden="true" />{" "}
-                                      Continue &amp; submit
-                                    </button>
-                                  </>
-                                )}
-                                {proposal.status === "changes_requested" && (
-                                  <button
-                                    type="button"
-                                    onClick={() => openFeedbackForm(proposal)}
-                                    className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-                                  >
-                                    <Send size={14} aria-hidden="true" />{" "}
-                                    Address feedback
-                                  </button>
-                                )}
-                              </span>
-                            )}
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-
-              {researchTab === "progress" &&
-                (!paper ? (
-                  noPaperState("Progress reports")
-                ) : (
-                  <>
-                    <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-                      <div>
-                        <h2 className="text-lg font-medium text-slate-800">
-                          Progress reports
-                        </h2>
-                        <p className="text-sm text-slate-500">
-                          Submit one report for each progress review round your
-                          department schedules.
-                        </p>
-                      </div>
+                  ) : (
+                    <>
+                      {upcomingDefenses.slice(0, 3).map((defense) => (
+                        <DefenseNotice key={defense.id} defense={defense} />
+                      ))}
                       <button
                         type="button"
-                        disabled={!canStartReport}
-                        title={progressEligibility?.reason ?? undefined}
-                        onClick={() => openReportForm(null)}
-                        className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => goTo("defenses")}
+                        className="mt-3 text-sm font-medium text-blue-700 hover:underline"
                       >
-                        <FileText size={16} aria-hidden="true" />{" "}
-                        {newReportPhaseLabel
-                          ? `Start ${newReportPhaseLabel}`
-                          : "New progress report"}
+                        See all defenses
                       </button>
-                    </div>
-                    <PhaseNotice notice={progressNotice} />
-                    {progressEligibility?.reason && (
-                      <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                        {progressEligibility.reason}
-                      </p>
-                    )}
-                    <div className="mt-4 space-y-3">
-                      {progressRounds.length === 0 &&
-                        earlierAttempts.length === 0 && (
-                          <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-                            Your department hasn't scheduled any progress review
-                            rounds for your degree level yet.
-                          </p>
-                        )}
-                      {progressRounds.map(({ phase, report }, index) =>
-                        report ? (
-                          <ProgressRoundCard
-                            key={phase.id}
-                            heading={`Round ${index + 1} · ${phase.label}`}
-                            report={report}
-                            defenses={defenses}
-                            onOpen={openReportForm}
-                            onError={showError}
-                          />
-                        ) : (
-                          <article
-                            key={phase.id}
-                            className="rounded-xl border border-dashed border-slate-300 p-4"
-                          >
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div>
-                                <h3 className="font-medium text-slate-700">
-                                  Round {index + 1} · {phase.label}
-                                </h3>
-                                <p className="mt-0.5 text-xs text-slate-500">
-                                  {roundWindowText(phase)}
-                                </p>
-                              </div>
-                              <StatusBadge
-                                status={phase.isOpen ? "open" : "not_started"}
-                              />
-                            </div>
-                          </article>
-                        ),
-                      )}
-                      {earlierAttempts.length > 0 && (
-                        <>
-                          <h3 className="pt-2 text-xs font-medium uppercase tracking-wide text-slate-400">
-                            Earlier attempts
-                          </h3>
-                          {earlierAttempts.map((report) => (
-                            <ProgressRoundCard
-                              key={report.id}
-                              heading={report.phaseLabel ?? "Progress report"}
-                              report={report}
-                              defenses={defenses}
-                              onOpen={openReportForm}
-                              onError={showError}
-                            />
-                          ))}
-                        </>
-                      )}
-                    </div>
-                  </>
-                ))}
-
-              {researchTab === "defenses" && (
-                <>
-                  <div className="mt-4">
-                    <h2 className="text-lg font-medium text-slate-800">
-                      Defenses
-                    </h2>
-                    <p className="text-sm text-slate-500">
-                      When and where each of your reports will be defended, and
-                      who is on the panel.
+                    </>
+                  )}
+                </Card>
+                <Card>
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Your research timeline
+                  </h3>
+                  {timeline.length === 0 ? (
+                    <p className="mt-2 text-sm text-slate-500">
+                      Your department hasn't published the timeline for your
+                      degree level yet.
                     </p>
-                  </div>
-                  <div className="mt-4 space-y-3">
-                    {defenses.length === 0 ? (
-                      <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-                        No defenses planned yet. Your department announces a
-                        defense for your proposal, progress reports and final
-                        report here.
-                      </p>
-                    ) : (
-                      [...defenses]
-                        .sort(
-                          (first, second) =>
-                            Number(isPastDefense(first)) -
-                              Number(isPastDefense(second)) ||
-                            new Date(first.defenseDate).getTime() -
-                              new Date(second.defenseDate).getTime(),
-                        )
-                        .map((defense) => (
-                          <DefenseCard
-                            key={defense.id}
-                            defense={defense}
-                            onError={showError}
-                          />
-                        ))
-                    )}
-                  </div>
-                </>
-              )}
-
-              {researchTab === "final" &&
-                (!paper ? (
-                  noPaperState("Final submissions")
-                ) : (
-                  <>
-                    <div className="mt-4">
-                      <h2 className="text-lg font-medium text-slate-800">
-                        Final submission
-                      </h2>
-                      <p className="text-sm text-slate-500">
-                        Submit your final report to your supervisor. Once it's
-                        approved, your department schedules your defense and you
-                        submit the final thesis.
-                      </p>
-                    </div>
-                    <PhaseNotice notice={defenseNotice} />
-                    {canSubmitFinalReport && finalEligibility?.reason && (
-                      <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                        {finalEligibility.reason}
-                      </p>
-                    )}
-                    <ol className="mt-4 space-y-3">
-                      <li className="rounded-xl border border-slate-200 p-4">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                              Step 1
-                            </p>
-                            <h3 className="font-medium text-slate-900">
-                              Final report
-                            </h3>
-                          </div>
+                  ) : (
+                    <ol className="mt-3 space-y-2">
+                      {timeline.map((phase) => (
+                        <li
+                          key={phase.id}
+                          className="flex items-start justify-between gap-3 text-sm"
+                        >
+                          <span className="min-w-0">
+                            <span className="block font-medium text-slate-800">
+                              {phase.sequenceNumber}. {phase.label}
+                            </span>
+                            <span className="block text-xs text-slate-500">
+                              {phase.phaseType === "defense"
+                                ? phase.defenseDate
+                                  ? `Defense day ${formatDate(phase.defenseDate)}`
+                                  : "Defense day not set"
+                                : roundWindowText(phase)}
+                            </span>
+                          </span>
                           <StatusBadge
-                            status={paper.finalReportStatus ?? "not_submitted"}
+                            status={phase.isOpen ? "open" : phase.status}
+                            label={
+                              phase.isOpen
+                                ? "Open"
+                                : phase.status === "closed"
+                                  ? "Closed"
+                                  : "Not open yet"
+                            }
                           />
-                        </div>
-                        {paper.finalReportReviewComment && (
-                          <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                            {paper.finalReportReviewedByName
-                              ? `${paper.finalReportReviewedByName}: `
-                              : ""}
-                            "{paper.finalReportReviewComment}"
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </Card>
+              </div>
+            </div>
+          ))}
+
+        {section === "proposal" && (
+          <div className="space-y-4">
+            {invites.length > 0 && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                <h2 className="text-sm font-semibold text-blue-900">
+                  Group invite requests
+                </h2>
+                <p className="mt-0.5 text-xs text-blue-700">
+                  Respond before the owner submits their proposal.
+                </p>
+                <ul className="mt-3 space-y-2">
+                  {invites.map((invite) => (
+                    <li
+                      key={invite.proposalId}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm shadow-sm"
+                    >
+                      <span>
+                        <span className="font-medium text-slate-800">
+                          {invite.ownerName}
+                        </span>{" "}
+                        invited you to join "{invite.title}"
+                      </span>
+                      <span className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void respondToInvite(invite.proposalId, "accepted")
+                          }
+                          className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                        >
+                          <Check size={14} aria-hidden="true" /> Accept
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void respondToInvite(invite.proposalId, "rejected")
+                          }
+                          className="inline-flex items-center gap-1 rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                        >
+                          <X size={14} aria-hidden="true" /> Decline
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <SectionHeader
+              title="Research proposal"
+              description="Write your proposal, attach the PDF and submit it for review."
+              action={
+                !hasActiveProposal && (
+                  <button
+                    type="button"
+                    disabled={!canStartProposal}
+                    onClick={() => openProposalForm(null)}
+                    className={primaryButtonClass}
+                  >
+                    <FileText size={16} aria-hidden="true" /> New proposal
+                  </button>
+                )
+              }
+            />
+            {!paper && <PhaseNotice notice={proposalNotice} />}
+            {hasRejectedProposal && !hasActiveProposal && (
+              <p className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                Your previous proposal was rejected. You can submit a new
+                proposal, even if the proposal deadline has passed.
+              </p>
+            )}
+            {proposals.length === 0 ? (
+              <EmptyState title="You haven't created a proposal yet">
+                {canStartProposal
+                  ? "Use “New proposal” to start one. You can save it as a draft and submit later."
+                  : "You can start one once your department opens the proposal phase."}
+              </EmptyState>
+            ) : (
+              <div className="space-y-3">
+                {proposals.map((proposal) => {
+                  const isOwner = proposal.submittedBy === currentUserId;
+                  const canAct = canActOn(proposal);
+                  return (
+                    <article
+                      key={proposal.id}
+                      className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3 className="font-medium text-slate-900">
+                            {proposal.title}
+                          </h3>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            {isOwner
+                              ? "Your proposal"
+                              : `By ${proposal.submittedByName ?? "a teammate"}`}{" "}
+                            · Supervisor:{" "}
+                            {proposal.supervisorName ?? "not assigned yet"}
                           </p>
-                        )}
-                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                          <DocumentLinks
-                            kind="papers"
-                            entityId={paper.id}
-                            filename={paper.finalReportOriginalFilename}
-                            fallbackName="final-report.pdf"
-                            onError={showError}
-                          />
-                          {canSubmitFinalReport && (
+                        </div>
+                        <span className="flex items-center gap-1">
+                          <StatusBadge status={proposal.status} />
+                          {proposal.deletedAt && (
+                            <StatusBadge status="deleted" label="Deleted" />
+                          )}
+                        </span>
+                      </div>
+                      <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-600">
+                        <Users size={14} aria-hidden="true" />
+                        {[
+                          proposal.submittedByName ?? "Owner",
+                          ...proposal.groupMembers.map(
+                            (member) =>
+                              `${member.name}${member.status !== "accepted" ? ` (${member.status})` : ""}`,
+                          ),
+                        ].join(", ")}
+                      </p>
+                      {proposal.reviewComment && (
+                        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          {proposal.reviewedByName
+                            ? `${proposal.reviewedByName}: `
+                            : ""}
+                          "{proposal.reviewComment}"
+                        </p>
+                      )}
+                      {proposal.studentResponse && (
+                        <p className="mt-2 text-xs text-blue-700">
+                          {proposal.respondedByName
+                            ? `${proposal.respondedByName} replied: `
+                            : "Reply: "}
+                          "{proposal.studentResponse}"
+                        </p>
+                      )}
+                      {proposal.deletedAt && (
+                        <p className="mt-2 text-xs text-slate-400">
+                          Deleted by {proposal.deletedByName ?? "an admin"} on{" "}
+                          {formatDate(proposal.deletedAt)}
+                        </p>
+                      )}
+                      {defenses
+                        .filter((defense) => defense.proposalId === proposal.id)
+                        .map((defense) => (
+                          <DefenseNotice key={defense.id} defense={defense} />
+                        ))}
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                        <DocumentActions
+                          kind="proposals"
+                          entityId={proposal.id}
+                          filename={proposal.originalFilename}
+                          fallbackName="proposal.pdf"
+                          onError={showError}
+                        />
+                        {canAct && (
+                          <span className="flex flex-wrap gap-2">
                             <button
                               type="button"
-                              disabled={!finalEligibility?.canStart}
-                              title={finalEligibility?.reason ?? undefined}
-                              onClick={() => {
-                                resetForm();
-                                setIsFinalReportFormOpen(true);
-                              }}
-                              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              onClick={() => void showHistory(proposal)}
+                              className={smallSecondaryButtonClass}
                             >
-                              <Send size={14} aria-hidden="true" />{" "}
-                              {paper.finalReportStatus
-                                ? "Resubmit final report"
-                                : "Submit final report"}
+                              <History size={14} aria-hidden="true" /> History
                             </button>
-                          )}
-                        </div>
-                      </li>
-                      <li className="rounded-xl border border-slate-200 p-4">
-                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                          Step 2
-                        </p>
-                        <h3 className="font-medium text-slate-900">
-                          Final defense
-                        </h3>
-                        {finalDefenses.length === 0 ? (
-                          <p className="mt-2 text-sm text-slate-500">
-                            {paper.finalReportStatus === "approved"
-                              ? "Your final report is approved. Your department will schedule your defense slot."
-                              : "Your defense is scheduled after your supervisor approves the final report."}
-                          </p>
-                        ) : (
-                          finalDefenses.map((defense) => (
-                            <div
-                              key={defense.id}
-                              className="mt-3 rounded-lg bg-slate-50 p-3 text-sm"
-                            >
-                              <div className="flex flex-wrap items-start justify-between gap-2">
-                                <p className="text-slate-800">
-                                  {formatDate(defense.defenseDate)}
-                                  {defense.scheduledTime
-                                    ? ` at ${defense.scheduledTime.slice(0, 5)}`
-                                    : ""}
-                                  {defense.location
-                                    ? ` · ${defense.location}`
-                                    : ""}
-                                </p>
-                                <StatusBadge
-                                  status={
-                                    defense.submissionConfirmed
-                                      ? defense.currentStatus
-                                      : "awaiting_thesis"
-                                  }
-                                  label={
-                                    defense.submissionConfirmed
-                                      ? defense.currentStatus === "pending"
-                                        ? "Thesis submitted"
-                                        : formatStatus(defense.currentStatus)
-                                      : "Awaiting thesis"
-                                  }
-                                />
-                              </div>
-                              {defense.panelNames.length > 0 && (
-                                <p className="mt-1 text-xs text-slate-500">
-                                  Panel: {defense.panelNames.join(", ")}
-                                </p>
-                              )}
-                              <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-                                <DocumentLinks
-                                  kind="defenses"
-                                  entityId={defense.id}
-                                  filename={defense.originalFilename}
-                                  fallbackName="final-thesis.pdf"
-                                  onError={showError}
-                                />
-                                {!defense.submissionConfirmed && (
+                            {proposal.status === "draft" && (
+                              <>
+                                {isGroupLevel && (
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      resetForm();
-                                      setThesisDefense(defense);
+                                      setFormError(null);
+                                      setSelectedMember("");
+                                      setGroupProposal(proposal);
                                     }}
-                                    className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                                    className={smallSecondaryButtonClass}
                                   >
-                                    <Send size={14} aria-hidden="true" /> Submit
-                                    final thesis
+                                    <Users size={14} aria-hidden="true" />{" "}
+                                    Group
                                   </button>
                                 )}
-                              </div>
-                            </div>
-                          ))
+                                <button
+                                  type="button"
+                                  onClick={() => openProposalForm(proposal)}
+                                  className={smallPrimaryButtonClass}
+                                >
+                                  <Pencil size={14} aria-hidden="true" />{" "}
+                                  Continue &amp; submit
+                                </button>
+                              </>
+                            )}
+                            {proposal.status === "changes_requested" && (
+                              <button
+                                type="button"
+                                onClick={() => openFeedbackForm(proposal)}
+                                className={smallPrimaryButtonClass}
+                              >
+                                <Send size={14} aria-hidden="true" /> Address
+                                feedback
+                              </button>
+                            )}
+                          </span>
                         )}
-                      </li>
-                    </ol>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {section === "progress" &&
+          (!paper ? (
+            noPaperState("Progress reports")
+          ) : (
+            <div className="space-y-4">
+              <SectionHeader
+                title="Progress reports"
+                description="Submit one report for each progress review round your department schedules."
+                action={
+                  !paper.finalReportStatus && (
+                    <button
+                      type="button"
+                      disabled={!canStartReport}
+                      onClick={() => openReportForm(null)}
+                      className={primaryButtonClass}
+                    >
+                      <FileText size={16} aria-hidden="true" />{" "}
+                      {newReportPhaseLabel
+                        ? `Start ${newReportPhaseLabel}`
+                        : "New progress report"}
+                    </button>
+                  )
+                }
+              />
+              <PhaseNotice notice={progressNotice} />
+              {progressEligibility?.reason && !paper.finalReportStatus && (
+                <BlockedReason>{progressEligibility.reason}</BlockedReason>
+              )}
+              <div className="space-y-3">
+                {progressRounds.length === 0 && earlierAttempts.length === 0 && (
+                  <EmptyState title="No progress review rounds yet">
+                    Your department hasn't scheduled any progress review rounds
+                    for your degree level yet.
+                  </EmptyState>
+                )}
+                {progressRounds.map(({ phase, report }, index) =>
+                  report ? (
+                    <ProgressRoundCard
+                      key={phase.id}
+                      heading={`Round ${index + 1} · ${phase.label}`}
+                      report={report}
+                      defenses={defenses}
+                      onOpen={openReportForm}
+                      onError={showError}
+                    />
+                  ) : (
+                    <article
+                      key={phase.id}
+                      className="rounded-xl border border-dashed border-slate-300 bg-white p-4"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className="font-medium text-slate-700">
+                            Round {index + 1} · {phase.label}
+                          </h3>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            {roundWindowText(phase)}
+                          </p>
+                        </div>
+                        <StatusBadge
+                          status={phase.isOpen ? "open" : "not_started"}
+                        />
+                      </div>
+                    </article>
+                  ),
+                )}
+                {earlierAttempts.length > 0 && (
+                  <>
+                    <h3 className="pt-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      Earlier attempts
+                    </h3>
+                    {earlierAttempts.map((report) => (
+                      <ProgressRoundCard
+                        key={report.id}
+                        heading={report.phaseLabel ?? "Progress report"}
+                        report={report}
+                        defenses={defenses}
+                        onOpen={openReportForm}
+                        onError={showError}
+                      />
+                    ))}
                   </>
-                ))}
-            </section>
-          )}
-        </div>
-      </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+        {section === "defenses" && (
+          <div className="space-y-4">
+            <SectionHeader
+              title="Defenses"
+              description="When and where each of your reports will be defended, and who is on the panel."
+            />
+            {defenses.length === 0 ? (
+              <EmptyState title="No defenses planned yet">
+                Your department announces a defense for your proposal, progress
+                reports and final report here.
+              </EmptyState>
+            ) : (
+              <div className="space-y-3">
+                {[...defenses]
+                  .sort(
+                    (first, second) =>
+                      Number(isPastDefense(first)) -
+                        Number(isPastDefense(second)) ||
+                      new Date(first.defenseDate).getTime() -
+                        new Date(second.defenseDate).getTime(),
+                  )
+                  .map((defense) => (
+                    <DefenseCard
+                      key={defense.id}
+                      defense={defense}
+                      onError={showError}
+                    />
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {section === "final" &&
+          (!paper ? (
+            noPaperState("Final submissions")
+          ) : (
+            <div className="space-y-4">
+              <SectionHeader
+                title="Final submission"
+                description="Submit your final report to your supervisor. Once it's approved, your department schedules your defense and you submit the final thesis."
+              />
+              <PhaseNotice notice={defenseNotice} />
+              {canSubmitFinalReport && finalEligibility?.reason && (
+                <BlockedReason>{finalEligibility.reason}</BlockedReason>
+              )}
+              <ol className="space-y-3">
+                <li className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                        Step 1
+                      </p>
+                      <h3 className="font-medium text-slate-900">
+                        Final report
+                      </h3>
+                    </div>
+                    <StatusBadge
+                      status={paper.finalReportStatus ?? "not_submitted"}
+                    />
+                  </div>
+                  {paper.finalReportReviewComment && (
+                    <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      {paper.finalReportReviewedByName
+                        ? `${paper.finalReportReviewedByName}: `
+                        : ""}
+                      "{paper.finalReportReviewComment}"
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <DocumentActions
+                      kind="papers"
+                      entityId={paper.id}
+                      filename={paper.finalReportOriginalFilename}
+                      fallbackName="final-report.pdf"
+                      onError={showError}
+                    />
+                    {canSubmitFinalReport && (
+                      <button
+                        type="button"
+                        disabled={!finalEligibility?.canStart}
+                        onClick={() => {
+                          resetForm();
+                          setIsFinalReportFormOpen(true);
+                        }}
+                        className={smallPrimaryButtonClass}
+                      >
+                        <Send size={14} aria-hidden="true" />{" "}
+                        {paper.finalReportStatus
+                          ? "Resubmit final report"
+                          : "Submit final report"}
+                      </button>
+                    )}
+                  </div>
+                </li>
+                <li className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Step 2
+                  </p>
+                  <h3 className="font-medium text-slate-900">Final defense</h3>
+                  {finalDefenses.length === 0 ? (
+                    <p className="mt-2 text-sm text-slate-500">
+                      {paper.finalReportStatus === "approved"
+                        ? "Your final report is approved. Your department will schedule your defense slot."
+                        : "Your defense is scheduled after your supervisor approves the final report."}
+                    </p>
+                  ) : (
+                    finalDefenses.map((defense) => (
+                      <div
+                        key={defense.id}
+                        className="mt-3 rounded-lg bg-slate-50 p-3 text-sm"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <p className="text-slate-800">
+                            {formatDate(defense.defenseDate)}
+                            {defense.scheduledTime
+                              ? ` at ${defense.scheduledTime.slice(0, 5)}`
+                              : ""}
+                            {defense.location ? ` · ${defense.location}` : ""}
+                          </p>
+                          <StatusBadge
+                            status={
+                              defense.submissionConfirmed
+                                ? defense.currentStatus
+                                : "awaiting_thesis"
+                            }
+                            label={
+                              defense.submissionConfirmed
+                                ? defense.currentStatus === "pending"
+                                  ? "Thesis submitted"
+                                  : formatStatus(defense.currentStatus)
+                                : "Awaiting thesis"
+                            }
+                          />
+                        </div>
+                        {defense.panelNames.length > 0 && (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Panel: {defense.panelNames.join(", ")}
+                          </p>
+                        )}
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                          <DocumentActions
+                            kind="defenses"
+                            entityId={defense.id}
+                            filename={defense.originalFilename}
+                            fallbackName="final-thesis.pdf"
+                            onError={showError}
+                          />
+                          {!defense.submissionConfirmed && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                resetForm();
+                                setThesisDefense(defense);
+                              }}
+                              className={smallPrimaryButtonClass}
+                            >
+                              <Send size={14} aria-hidden="true" /> Submit
+                              final thesis
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </li>
+              </ol>
+            </div>
+          ))}
+      </AppShell>
 
       {proposalForm && (
         <Modal
@@ -2049,11 +2196,7 @@ function StudentDashboard() {
               onChange={setFormFile}
               required={false}
             />
-            {formError && (
-              <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                {formError}
-              </p>
-            )}
+            <FormError message={formError} />
             <FormActions
               onCancel={closeForms}
               busy={isSaving}
@@ -2108,11 +2251,7 @@ function StudentDashboard() {
               onChange={setFormFile}
               required={false}
             />
-            {formError && (
-              <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                {formError}
-              </p>
-            )}
+            <FormError message={formError} />
             <FormActions
               onCancel={closeForms}
               busy={isSaving}
@@ -2190,11 +2329,7 @@ function StudentDashboard() {
               onChange={setFormFile}
               required={false}
             />
-            {formError && (
-              <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                {formError}
-              </p>
-            )}
+            <FormError message={formError} />
             <FormActions
               onCancel={closeForms}
               busy={isSaving}
@@ -2246,11 +2381,7 @@ function StudentDashboard() {
               Your supervisor reviews the final report before your defense can
               be scheduled.
             </p>
-            {formError && (
-              <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                {formError}
-              </p>
-            )}
+            <FormError message={formError} />
             <FormActions
               onCancel={closeForms}
               busy={isSaving}
@@ -2289,11 +2420,7 @@ function StudentDashboard() {
               After submitting, the thesis can't be replaced. It goes to your
               defense panel.
             </p>
-            {formError && (
-              <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                {formError}
-              </p>
-            )}
+            <FormError message={formError} />
             <FormActions
               onCancel={closeForms}
               busy={isSaving}
@@ -2376,11 +2503,7 @@ function StudentDashboard() {
                 </button>
               </div>
             )}
-            {formError && (
-              <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                {formError}
-              </p>
-            )}
+            <FormError message={formError} />
             <button
               type="button"
               onClick={() => {
@@ -2432,7 +2555,7 @@ function StudentDashboard() {
           )}
         </Modal>
       )}
-    </div>
+    </>
   );
 }
 
