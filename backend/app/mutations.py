@@ -9,14 +9,23 @@ from . import models
 from . import constraints
 from . import defenses
 from . import notifications
-from . utils import get_password_hash, committed_student_ids, has_active_proposal, rejected_proposals, save_avatar_image, is_accepted_group_member, ensure_student_profile, proposal_group_member_users, ensure_paper_for_proposal, is_paper_participant, find_my_paper
-from .research_workflow import active_phases, current_open_phase, is_phase_open, phase_has_ended, newest_phase_for_level, phase_for_new_submission, record_submission, validate_phase_for_paper
+from . utils import get_password_hash, committed_student_ids, has_active_proposal, rejected_proposals, save_avatar_image, is_accepted_group_member, ensure_student_profile, proposal_group_member_users, ensure_paper_for_proposal, is_paper_participant, find_my_paper, active_batch, active_batch_id, batch_schema, student_batch_id
+from .research_workflow import (
+    active_phases,
+    level_phases,
+    current_open_phase,
+    ensure_phase_accepts_submissions,
+    is_phase_open,
+    phase_has_ended,
+    newest_phase_for_level,
+    phase_for_new_submission,
+    previous_report_block,
+    record_submission,
+    validate_phase_can_open,
+    validate_phase_for_paper,
+)
 from . permissions import IsSuperAdmin, IsAdminOrSuperAdmin, IsDepartmentAdmin, IsStudent, IsProfessor, IsAuthenticated
 
-# @strawberry.type
-# class AdminMutation:
-#     @strawberry.mutation(permsission_classes = [IsSuperAdmin])
-#     def create_admin(self , info : strawberry.Info, )
 
 def _ensure_email_available(db, email: str, exclude_user_id=None) -> None:
     """Emails are unique regardless of letter case, so "Ram@x.com" can't shadow "ram@x.com"."""
@@ -150,7 +159,7 @@ class UserMutation:
             name=current_user.name,
             email=current_user.email,
             password="********",
-            role=current_user.role,
+            role=getattr(current_user.role, "value", current_user.role),
             created_at=current_user.created_at,
             avatar_url=current_user.avatar_url,
         )
@@ -420,6 +429,8 @@ class StudentProfilesMutation:
             supervisor_id = admin_input.supervisor_id,
             status = admin_input.status,
             roll_number = admin_input.roll_number or None,
+            # The cohort that is running now — the admin never picks it from a list.
+            batch_id = active_batch_id(db),
         )
         if db.query(models.StudentProfiles).filter(models.StudentProfiles.user_id == admin_input.user_id).first():
             raise Exception("Student already has a profile. Use update profile instead.")
@@ -586,8 +597,7 @@ class ProposalsMutation:
             phase = db.query(models.ResearchPhase).filter(models.ResearchPhase.id == proposal.phase_id).first()
             if not phase:
                 raise Exception("This proposal is not linked to a research phase")
-            if not is_phase_open(phase) and not _replaces_rejected_proposal(db, proposal):
-                raise Exception(f'Submission window for phase "{phase.label}" is closed')
+            ensure_phase_accepts_submissions(phase, allow_late=_replaces_rejected_proposal(db, proposal))
             accepted_count = db.query(models.ProposalCandidates).filter(
                 models.ProposalCandidates.proposal_id == proposal.id,
                 models.ProposalCandidates.status == "accepted",
@@ -660,8 +670,7 @@ class ProposalsMutation:
         phase = db.query(models.ResearchPhase).filter(models.ResearchPhase.id == proposal.phase_id).first()
         if not phase:
             raise Exception("This proposal is not linked to a research phase")
-        if not is_phase_open(phase):
-            raise Exception(f'Submission window for phase "{phase.label}" is closed')
+        ensure_phase_accepts_submissions(phase)
 
         response_text = student_input.response.strip()
         if not response_text:
@@ -722,6 +731,19 @@ class ProposalsMutation:
 
         proposal.deleted_at = datetime.now(timezone.utc)
         proposal.deleted_by = current_user.id
+        # Soft delete: the row stays, and the uploaded PDF is deliberately left in
+        # storage — nothing here touches file_storage. The audit trail records who.
+        if proposal.phase_id:
+            record_submission(
+                db,
+                entity_type=models.SubmissionEntityType.proposal,
+                entity=proposal,
+                phase_id=proposal.phase_id,
+                submitted_by=proposal.submitted_by,
+                status=models.SubmissionStatus.deleted,
+                reviewed_by=current_user.id,
+                comments=f"Deleted by {current_user.name}",
+            )
         db.commit()
         db.refresh(proposal)
 
@@ -850,9 +872,11 @@ class ProposalsMutation:
             raise Exception(f"Status must be one of: {', '.join(sorted(allowed_statuses))}")
 
         if status == "approved":
-            # Assignment normally already reserved this load. Re-check under the
-            # same row lock at explicit acceptance too, which protects old records
-            # created before the capacity rule existed.
+            # Capacity is the department admin's decision, made in assign_proposal;
+            # the professor is never blocked here for an assignment they were given.
+            # Re-check anyway under the same row lock to catch records assigned
+            # before the capacity rule existed, and send the admins who can reassign
+            # it a notification instead of failing the professor's review.
             db.query(models.User).filter(models.User.id == current_user.id).with_for_update().first()
             owner = db.query(models.User).filter(models.User.id == proposal.submitted_by).first()
             level = constraints.get_degree_level(db, owner)
@@ -861,7 +885,7 @@ class ProposalsMutation:
                 db, current_user.id, level, proposal_size, exclude_proposal_id=proposal.id
             )
             if not allowed:
-                raise Exception(reason)
+                notifications.notify_supervision_over_capacity(db, proposal, reason)
 
         proposal.status = status
         proposal.reviewed_by = current_user.id
@@ -1162,6 +1186,12 @@ class ProgressReportMutation:
             taken_phase_ids={phase_id for phase_id, status in existing if status != "rejected"},
             retry_phase_ids={phase_id for phase_id, status in existing if status == "rejected" and phase_id},
         )
+        # The series runs in order: the round before this one has to have been
+        # defended. Replacing a rejected report in its own round is not "the next
+        # round", so the gate looks only at rounds before the one being filed in.
+        blocked = previous_report_block(db, paper.id, before_sequence=phase.sequence_number)
+        if blocked:
+            raise Exception(blocked)
 
         report = models.ProgressReports(
             paper_id=paper.id,
@@ -1205,8 +1235,7 @@ class ProgressReportMutation:
         phase = db.query(models.ResearchPhase).filter(models.ResearchPhase.id == report.phase_id).first()
         if not phase:
             raise Exception("This progress report is not linked to a research phase")
-        if not is_phase_open(phase) and not _replaces_rejected_report(db, report):
-            raise Exception(f'Submission window for phase "{phase.label}" is closed')
+        ensure_phase_accepts_submissions(phase, allow_late=_replaces_rejected_report(db, report))
 
         report.status = "submitted"
         record_submission(
@@ -1302,6 +1331,10 @@ class PaperMutation:
             raise Exception("You don't have an approved paper to submit a final report for yet")
         # Final submissions belong to the final defense stage of the research timeline.
         current_open_phase(db, current_user, models.PhaseType.defense)
+        # The final report comes after the whole progress series has been defended.
+        blocked = previous_report_block(db, paper.id)
+        if blocked:
+            raise Exception(blocked)
         if paper.final_report_status in {"submitted", "approved"}:
             raise Exception("Your final report has already been submitted")
         if not paper.final_report_file_path:
@@ -1404,6 +1437,10 @@ class DefenseMutation:
                 raise Exception("Progress report not found")
             if report.status == "draft":
                 raise Exception("Only submitted progress reports can be defended")
+            # The supervisor turned this round down, so there is nothing to defend until
+            # the student submits a replacement — same rule the proposal branch applies.
+            if report.status == "rejected":
+                raise Exception("This progress report was rejected by the supervisor — it can't be defended")
             if phase and phase.phase_type != models.PhaseType.progress_report:
                 raise Exception(f'"{phase.label}" is not a progress report phase')
             phase = phase or own_phase(report.phase_id)
@@ -1470,8 +1507,8 @@ class DefenseMutation:
             raise Exception("Attach your final thesis PDF before confirming submission")
 
         phase = db.query(models.ResearchPhase).filter(models.ResearchPhase.id == defense.phase_id).first() if defense.phase_id else None
-        if phase and phase.deleted_at is None and not is_phase_open(phase):
-            raise Exception(f'Defense phase "{phase.label}" is not currently available')
+        if phase and phase.deleted_at is None:
+            ensure_phase_accepts_submissions(phase)
 
         defense.submission_confirmed = True
         defense.current_status = "pending"
@@ -1488,55 +1525,69 @@ class DefenseMutation:
         db.refresh(defense)
         return defenses.defense_schema(db, defense)
 
-    @strawberry.mutation(permission_classes=[IsDepartmentAdmin])
-    def add_defense_panel_member(self, info: strawberry.Info, admin_input: mutation_input.DefensePanelInput) -> schemas.DefensePanelSchema:
-        db = info.context["db"]
-        current_user = info.context["current_user"]
-        defense = db.query(models.Defenses).filter(models.Defenses.id == admin_input.defense_id).first()
-        professor = db.query(models.ProfessorProfiles).filter(models.ProfessorProfiles.user_id == admin_input.professor_id).first()
-        if not defense or not professor:
-            raise Exception("Defense or professor profile not found")
-        if defenses.subject_department_id(db, defenses.defense_subject(db, defense)) != current_user.department_id:
-            raise Exception("Defense does not belong to your department")
-        existing = db.query(models.DefensePanel).filter(
-            models.DefensePanel.defense_id == defense.id,
-            models.DefensePanel.professor_id == professor.user_id,
-        ).first()
-        if existing:
-            raise Exception("This professor is already on the defense panel")
-        panel = models.DefensePanel(defense_id=defense.id, professor_id=professor.user_id)
-        db.add(panel)
-        notifications.notify_panel_member_added(db, defense, professor.user_id)
-        db.commit()
-        db.refresh(panel)
-        name = db.query(models.User.name).filter(models.User.id == panel.professor_id).scalar()
-        return schemas.DefensePanelSchema(id=panel.id, defense_id=panel.defense_id, professor_id=panel.professor_id, professor_name=name, created_at=panel.created_at)
+    @strawberry.mutation(permission_classes=[IsProfessor])
+    def submit_defense_verdict(self, info: strawberry.Info, professor_input: mutation_input.DefenseVerdictInput) -> schemas.DefenseSchema:
+        """One panel member's verdict on a defense they sat on.
 
-    @strawberry.mutation(permission_classes=[IsDepartmentAdmin])
-    def record_defense_outcome(self, info: strawberry.Info, admin_input: mutation_input.DefenseOutcomeInput) -> schemas.DefenseSchema:
+        The panel decides by itself: when the last member votes, the outcome is
+        settled by majority there and then, with no admin approving it
+        afterwards. A member may change their own vote until that moment.
+        """
         db = info.context["db"]
         current_user = info.context["current_user"]
-        defense = db.query(models.Defenses).filter(models.Defenses.id == admin_input.defense_id).first()
+        defense = db.query(models.Defenses).filter(models.Defenses.id == professor_input.defense_id).first()
         if not defense:
             raise Exception("Defense not found")
-        if defenses.subject_department_id(db, defenses.defense_subject(db, defense)) != current_user.department_id:
-            raise Exception("Defense does not belong to your department")
+        if current_user.id not in defenses.panel_professor_ids(db, defense.id):
+            raise Exception("Only this defense's panel members can submit a verdict")
+        if defense.current_status != "pending":
+            raise Exception("This defense already has an outcome")
         if defenses.is_final(defense) and not defense.submission_confirmed:
-            raise Exception("The student's defense submission must be confirmed before recording an outcome")
-        decision = admin_input.status.strip().lower()
-        if decision not in {"accepted", "rejected"}:
-            raise Exception("Defense outcome must be accepted or rejected")
-        defense.current_status = decision
-        if defense.phase_id:
-            record_submission(
-                db,
-                entity_type=models.SubmissionEntityType.defense,
-                entity=defense,
-                phase_id=defense.phase_id,
-                submitted_by=current_user.id,
-                status=models.SubmissionStatus(decision),
-                reviewed_by=current_user.id,
-                comments=admin_input.comments,
+            raise Exception("The student has not submitted their final thesis yet")
+        # A panel votes on a defense it has actually heard.
+        if not defenses.has_ended(defense):
+            raise Exception("The defense has not been held yet — a verdict can only be given afterwards")
+        try:
+            verdict = models.DefenseVerdictType(professor_input.verdict.strip().lower())
+        except ValueError:
+            raise Exception("Verdict must be accept or reject")
+        comments = (professor_input.comments or "").strip() or None
+        # Turning a defense down without a reason leaves the student nothing to work from.
+        if verdict == models.DefenseVerdictType.reject and not comments:
+            raise Exception("Feedback is required when you reject a defense")
+
+        # One row per member: voting again replaces their earlier verdict.
+        existing = db.query(models.DefenseVerdict).filter(
+            models.DefenseVerdict.defense_id == defense.id,
+            models.DefenseVerdict.professor_id == current_user.id,
+        ).first()
+        if existing:
+            existing.verdict = verdict
+            existing.comments = comments
+            existing.submitted_at = datetime.now(timezone.utc)
+        else:
+            db.add(models.DefenseVerdict(
+                defense_id=defense.id, professor_id=current_user.id, verdict=verdict, comments=comments,
+            ))
+        db.flush()
+
+        if defenses.finalize_if_complete(db, defense) is not None:
+            decision = defense.current_status
+            if defense.phase_id:
+                record_submission(
+                    db,
+                    entity_type=models.SubmissionEntityType.defense,
+                    entity=defense,
+                    phase_id=defense.phase_id,
+                    submitted_by=current_user.id,
+                    status=models.SubmissionStatus(decision),
+                    # No single person made this call, so the history row names none.
+                    reviewed_by=None,
+                    comments=defense.outcome_comments,
+                )
+            notifications.notify_defense_outcome(
+                db, defense, defended=decision == "accepted",
+                comments=defense.outcome_comments, requires_redefense=bool(defense.requires_redefense),
             )
         db.commit()
         db.refresh(defense)
@@ -1557,7 +1608,16 @@ class ResearchPhaseMutation:
         label = admin_input.label.strip()
         if not label:
             raise Exception("A phase label is required")
-        if admin_input.sequence_number < 1:
+        batch = active_batch(db)
+        if batch is None:
+            raise Exception("No batch is running — start one before scheduling phases")
+        # Default to the next free step for this level, so the common case needs no
+        # arithmetic from the admin. An explicit number still wins.
+        sequence_number = admin_input.sequence_number
+        if sequence_number is None:
+            existing = level_phases(db, degree_level, current_user.department_id, batch.id)
+            sequence_number = max((phase.sequence_number for phase in existing), default=0) + 1
+        if sequence_number < 1:
             raise Exception("Sequence number must be at least 1")
         if phase_type == models.PhaseType.defense:
             if not admin_input.defense_date:
@@ -1569,9 +1629,14 @@ class ResearchPhaseMutation:
         phase = models.ResearchPhase(
             phase_type=phase_type, degree_level=degree_level,
             department_id=current_user.department_id, label=label,
-            sequence_number=admin_input.sequence_number, opens_at=admin_input.opens_at,
+            sequence_number=sequence_number, opens_at=admin_input.opens_at,
             deadline_at=admin_input.deadline_at, defense_date=admin_input.defense_date,
             grace_period_enabled=admin_input.grace_period_enabled, created_by=current_user.id,
+            # Drafted, not started: the admin lays out the whole timeline, then opens
+            # each phase in turn. Nobody is notified until it actually opens.
+            status=models.PhaseStatus.pending,
+            # Phases belong to the cohort that is running; the admin never picks it.
+            batch_id=batch.id,
         )
         db.add(phase)
         try:
@@ -1579,10 +1644,9 @@ class ResearchPhaseMutation:
         except IntegrityError:
             db.rollback()
             raise Exception("That degree level already has a phase with this sequence number")
-        notified_count = notifications.notify_phase(db, phase, is_update=False)
         db.commit()
         db.refresh(phase)
-        return _research_phase_schema(phase, notified_count)
+        return _research_phase_schema(phase)
 
     @strawberry.mutation(permission_classes=[IsDepartmentAdmin])
     def update_research_phase(self, info: strawberry.Info, admin_input: mutation_input.ResearchPhaseUpdateInput) -> schemas.ResearchPhaseSchema:
@@ -1594,6 +1658,9 @@ class ResearchPhaseMutation:
         ).first()
         if not phase:
             raise Exception("Research phase not found in your department")
+        # A closed round is history. Reopen it first if its dates really must change.
+        if phase.status == models.PhaseStatus.closed:
+            raise Exception(f'"{phase.label}" is closed — reopen it before changing its schedule')
         if admin_input.label is not None and not admin_input.label.strip():
             raise Exception("A phase label is required")
         if admin_input.sequence_number is not None and admin_input.sequence_number < 1:
@@ -1616,10 +1683,54 @@ class ResearchPhaseMutation:
         except IntegrityError:
             db.rollback()
             raise Exception("That degree level already has a phase with this sequence number")
-        notified_count = notifications.notify_phase(db, phase, is_update=True)
+        notified_count = notifications.notify_phase(db, phase, is_update=True) if phase.status == models.PhaseStatus.open else None
         db.commit()
         db.refresh(phase)
         return _research_phase_schema(phase, notified_count)
+
+    @strawberry.mutation(permission_classes=[IsDepartmentAdmin])
+    def open_research_phase(self, info: strawberry.Info, admin_input: mutation_input.ResearchPhaseIdInput) -> schemas.ResearchPhaseSchema:
+        """Start a phase, once every earlier step of its degree level has closed.
+
+        Also reopens a phase that was closed too early. Either way the ordering
+        rule is the same, and it lives in validate_phase_can_open.
+        """
+        db = info.context["db"]
+        current_user = info.context["current_user"]
+        phase = _own_phase(db, current_user, admin_input.id)
+        if phase.status == models.PhaseStatus.open:
+            raise Exception(f'"{phase.label}" is already open')
+        validate_phase_can_open(
+            db, phase.degree_level, phase.department_id, phase.sequence_number,
+            batch_id=phase.batch_id, exclude_phase_id=phase.id,
+        )
+        phase.status = models.PhaseStatus.open
+        phase.closed_at = None
+        phase.closed_by = None
+        # Students only hear about a phase when it actually starts taking work.
+        notified_count = notifications.notify_phase(db, phase, is_update=False)
+        db.commit()
+        db.refresh(phase)
+        return _research_phase_schema(phase, notified_count)
+
+    @strawberry.mutation(permission_classes=[IsDepartmentAdmin])
+    def close_research_phase(self, info: strawberry.Info, admin_input: mutation_input.ResearchPhaseIdInput) -> schemas.ResearchPhaseSchema:
+        """End a phase. Nothing new can be submitted into it afterwards, while
+        everything already submitted stays visible and reviewable — closing is
+        not a deletion, and it's what lets the next step of the timeline open."""
+        db = info.context["db"]
+        current_user = info.context["current_user"]
+        phase = _own_phase(db, current_user, admin_input.id)
+        if phase.status == models.PhaseStatus.closed:
+            raise Exception(f'"{phase.label}" is already closed')
+        if phase.status == models.PhaseStatus.pending:
+            raise Exception(f'"{phase.label}" has not been opened yet')
+        phase.status = models.PhaseStatus.closed
+        phase.closed_at = datetime.now(timezone.utc)
+        phase.closed_by = current_user.id
+        db.commit()
+        db.refresh(phase)
+        return _research_phase_schema(phase)
 
     @strawberry.mutation(permission_classes=[IsDepartmentAdmin])
     def delete_research_phase(self, info: strawberry.Info, admin_input: mutation_input.ResearchPhaseDeleteInput) -> schemas.ResearchPhaseSchema:
@@ -1645,6 +1756,17 @@ class ResearchPhaseMutation:
         return _research_phase_schema(phase)
 
 
+def _own_phase(db, current_user, phase_id) -> models.ResearchPhase:
+    """One phase from the admin's own department, or an error naming why not."""
+    phase = active_phases(db.query(models.ResearchPhase)).filter(
+        models.ResearchPhase.id == phase_id,
+        models.ResearchPhase.department_id == current_user.department_id,
+    ).first()
+    if not phase:
+        raise Exception("Research phase not found in your department")
+    return phase
+
+
 def _research_phase_schema(phase: models.ResearchPhase, notified_count=None) -> schemas.ResearchPhaseSchema:
     return schemas.ResearchPhaseSchema(
         id=phase.id, phase_type=phase.phase_type.value, degree_level=phase.degree_level.value,
@@ -1652,8 +1774,61 @@ def _research_phase_schema(phase: models.ResearchPhase, notified_count=None) -> 
         opens_at=phase.opens_at, deadline_at=phase.deadline_at, defense_date=phase.defense_date,
         grace_period_enabled=phase.grace_period_enabled, created_by=phase.created_by,
         created_at=phase.created_at, is_open=is_phase_open(phase), has_ended=phase_has_ended(phase),
+        status=phase.status.value, closed_at=phase.closed_at, closed_by=phase.closed_by,
         notified_count=notified_count,
     )
+
+
+@strawberry.type
+class BatchMutation:
+    # A cohort is retired and the next one started in one action, because that is
+    # one decision for the admin, not two steps they have to remember in order.
+    @strawberry.mutation(permission_classes=[IsAdminOrSuperAdmin])
+    def reset_to_new_batch(self, info: strawberry.Info, admin_input: mutation_input.ResetToNewBatchInput) -> schemas.BatchSchema:
+        """Archive the cohort that has finished and start the next one.
+
+        Nothing is deleted: the old batch's students, phases, proposals, reports,
+        defenses and history all stay exactly as they are and stay queryable — they
+        simply stop being the cohort everyone's day-to-day view is about.
+        """
+        db = info.context["db"]
+        current_user = info.context["current_user"]
+        label = admin_input.new_batch_label.strip()
+        if not label:
+            raise Exception("Give the new batch a name")
+        role = getattr(current_user.role, "value", current_user.role)
+        current = active_batch(db)
+        if current is not None:
+            # A cohort is only done once every phase of its timeline has been closed
+            # (or taken off it). Otherwise a reset would strand students mid-flow.
+            still_open = active_phases(db.query(models.ResearchPhase)).filter(
+                models.ResearchPhase.batch_id == current.id,
+                models.ResearchPhase.status != models.PhaseStatus.closed,
+            ).order_by(models.ResearchPhase.sequence_number).all()
+            if still_open and not admin_input.force:
+                names = ", ".join(f'"{phase.label}"' for phase in still_open[:3])
+                more = f" and {len(still_open) - 3} more" if len(still_open) > 3 else ""
+                raise Exception(
+                    f"{current.label} still has phases that have not been closed: {names}{more}. "
+                    "Close them first, or ask a super admin to force the reset."
+                )
+            if still_open and role != "super_admin":
+                raise Exception("Only a super admin can force a reset while a phase is still open")
+            current.status = models.BatchStatus.archived
+            current.archived_at = datetime.now(timezone.utc)
+            current.archived_by = current_user.id
+            db.flush()
+
+        batch = models.Batch(label=label, status=models.BatchStatus.active, created_by=current_user.id)
+        db.add(batch)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise Exception("Another batch is already active — reload and try again")
+        db.commit()
+        db.refresh(batch)
+        return batch_schema(db, batch)
 
 
 @strawberry.type

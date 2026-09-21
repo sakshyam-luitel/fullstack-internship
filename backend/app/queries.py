@@ -7,8 +7,25 @@ from sqlalchemy import or_
 
 from . import constraints, defenses, models, schemas
 from .permissions import IsAdminOrSuperAdmin, IsAuthenticated, IsDepartmentAdmin, IsProfessor, IsStudent
-from .utils import committed_student_ids, find_my_paper, is_accepted_group_member, proposal_group_member_users
-from .research_workflow import active_phases, is_phase_open, phase_has_ended
+from .utils import (
+    active_batch,
+    batch_schema,
+    batch_student_ids,
+    committed_student_ids,
+    find_my_paper,
+    is_accepted_group_member,
+    proposal_group_member_users,
+    student_batch_id,
+)
+from .research_workflow import (
+    active_phases,
+    current_open_phase,
+    is_phase_open,
+    newest_phase_for_level,
+    phase_for_new_submission,
+    phase_has_ended,
+    previous_report_block,
+)
 
 
 @strawberry.type
@@ -347,7 +364,10 @@ class UserQuery:
         ]
 
     @strawberry.field(permission_classes=[IsAdminOrSuperAdmin])
-    def proposals(self, info: strawberry.Info) -> list[schemas.ProposalSchemaAdmin]:
+    def proposals(self, info: strawberry.Info, include_deleted: bool = False) -> list[schemas.ProposalSchemaAdmin]:
+        """Every student proposal the admin may see. Deleted ones are left out by
+        default — from the admin's side a deleted proposal looks gone — but the row
+        and its file are still there, and include_deleted brings them back."""
         db = info.context["db"]
         current_user = info.context.get("current_user")
         submitted_by_user = aliased(models.User)
@@ -355,6 +375,7 @@ class UserQuery:
         reviewer_user = aliased(models.User)
         responder_user = aliased(models.User)
         deleter_user = aliased(models.User)
+        
         cluster = aliased(models.Clusters)
         proposals_query = (
             db.query(models.Proposals, submitted_by_user.name, supervisor_user.name, cluster.name, reviewer_user.name, responder_user.name, deleter_user.name)
@@ -366,6 +387,8 @@ class UserQuery:
             .outerjoin(deleter_user, models.Proposals.deleted_by == deleter_user.id)
             .filter(submitted_by_user.role == models.Role.student)
         )
+        if not include_deleted:
+            proposals_query = proposals_query.filter(models.Proposals.deleted_at.is_(None))
         if current_user and getattr(current_user.role, "value", current_user.role) == "admin":
             proposals_query = proposals_query.filter(
                 submitted_by_user.department_id == current_user.department_id
@@ -548,10 +571,81 @@ class UserQuery:
                 ),
                 phase_id=report.phase_id,
                 phase_label=phase.label if phase else None,
+                phase_sequence_number=phase.sequence_number if phase else None,
                 deadline_at=phase.deadline_at if phase else None,
             )
             for report, phase in rows
         ]
+
+    @strawberry.field(permission_classes=[IsStudent])
+    def my_progress_report_eligibility(self, info: strawberry.Info) -> schemas.SubmissionEligibilitySchema:
+        """Which round of the progress series the student may start next, if any.
+
+        Mirrors create_progress_report so the dashboard can say why the button is
+        off — the series may have no open round, this round may already be filed,
+        or the round before it may not have been defended yet.
+        """
+        db = info.context["db"]
+        current_user = info.context["current_user"]
+        paper = find_my_paper(db, current_user)
+        if not paper:
+            return schemas.SubmissionEligibilitySchema(
+                can_start=False, reason="You don't have an approved paper to report progress on yet"
+            )
+        existing = db.query(models.ProgressReports.phase_id, models.ProgressReports.status).filter(
+            models.ProgressReports.paper_id == paper.id
+        ).all()
+        try:
+            phase = phase_for_new_submission(
+                db,
+                current_user,
+                models.PhaseType.progress_report,
+                taken_phase_ids={phase_id for phase_id, status in existing if status != "rejected"},
+                retry_phase_ids={phase_id for phase_id, status in existing if status == "rejected" and phase_id},
+            )
+        except Exception as error:
+            return schemas.SubmissionEligibilitySchema(can_start=False, reason=str(error))
+        blocked = previous_report_block(db, paper.id, before_sequence=phase.sequence_number)
+        return schemas.SubmissionEligibilitySchema(
+            can_start=blocked is None,
+            reason=blocked,
+            phase_id=phase.id,
+            phase_label=phase.label,
+            sequence_number=phase.sequence_number,
+            deadline_at=phase.deadline_at,
+        )
+
+    @strawberry.field(permission_classes=[IsStudent])
+    def my_final_report_eligibility(self, info: strawberry.Info) -> schemas.SubmissionEligibilitySchema:
+        """Whether the final report can be submitted: the defense phase has to be
+        open and every progress round already defended."""
+        db = info.context["db"]
+        current_user = info.context["current_user"]
+        paper = find_my_paper(db, current_user)
+        if not paper:
+            return schemas.SubmissionEligibilitySchema(
+                can_start=False, reason="You don't have an approved paper to submit a final report for yet"
+            )
+        if paper.final_report_status in {"submitted", "approved"}:
+            return schemas.SubmissionEligibilitySchema(can_start=False, reason="Your final report has already been submitted")
+        try:
+            phase = current_open_phase(db, current_user, models.PhaseType.defense)
+        except Exception as error:
+            return schemas.SubmissionEligibilitySchema(can_start=False, reason=str(error))
+        # The defense itself is planned against the newest defense phase
+        # (defenses.final_defense_phase), so that's the date to show.
+        newest = newest_phase_for_level(db, current_user, models.PhaseType.defense)
+        if newest is not None and is_phase_open(newest):
+            phase = newest
+        blocked = previous_report_block(db, paper.id)
+        return schemas.SubmissionEligibilitySchema(
+            can_start=blocked is None,
+            reason=blocked,
+            phase_id=phase.id,
+            phase_label=phase.label,
+            sequence_number=phase.sequence_number,
+            defense_date=phase.defense_date,
+        )
 
     @strawberry.field(permission_classes=[IsStudent])
     def my_defenses(self, info: strawberry.Info) -> list[schemas.DefenseSchema]:
@@ -618,6 +712,7 @@ class UserQuery:
                 uploaded_at=report.uploaded_at,
                 phase_id=report.phase_id,
                 phase_label=phase.label if phase else None,
+                phase_sequence_number=phase.sequence_number if phase else None,
                 deadline_at=phase.deadline_at if phase else None,
             )
             for report, submitted_by_name, phase in rows
@@ -631,13 +726,46 @@ class UserQuery:
         return [defenses.defense_schema(db, defense) for defense in defenses.defenses_for_professor(db, current_user.id)]
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    def research_phases(self, info: strawberry.Info) -> list[schemas.ResearchPhaseSchema]:
+    def batches(self, info: strawberry.Info) -> list[schemas.BatchSchema]:
+        """Every cohort, the active one first, then the archived ones newest first.
+
+        This is what the admin's batch selector reads: picking an archived cohort
+        shows that year's world unchanged, as history rather than today's work.
+        """
+        db = info.context["db"]
+        rows = db.query(models.Batch).order_by(
+            models.Batch.status.asc(), models.Batch.started_at.desc()
+        ).all()
+        return [batch_schema(db, batch) for batch in rows]
+
+    @strawberry.field(permission_classes=[IsAuthenticated])
+    def current_batch(self, info: strawberry.Info) -> Optional[schemas.BatchSchema]:
+        """The cohort going through the pipeline now, or None before the first one."""
+        db = info.context["db"]
+        batch = active_batch(db)
+        return batch_schema(db, batch) if batch else None
+
+    @strawberry.field(permission_classes=[IsAuthenticated])
+    def research_phases(self, info: strawberry.Info, batch_id: Optional[uuid.UUID] = None) -> list[schemas.ResearchPhaseSchema]:
         """Timeline phases applicable to the signed-in user's department — and, for a
-        student, only the phases for their own degree level."""
+        student, only the phases for their own degree level.
+
+        Scoped to one cohort: the active batch by default, or the one asked for,
+        so an archived cohort's timeline stays out of the day-to-day view without
+        ever being unreachable.
+        """
         db = info.context["db"]
         current_user = info.context["current_user"]
         role = getattr(current_user.role, "value", current_user.role)
         query = active_phases(db.query(models.ResearchPhase))
+        scope_batch_id = batch_id or (
+            student_batch_id(db, current_user.id) if role == "student" else (active_batch(db).id if active_batch(db) else None)
+        )
+        if scope_batch_id is not None:
+            # Phases filed before batches existed belong to no cohort and still show.
+            query = query.filter(
+                or_(models.ResearchPhase.batch_id == scope_batch_id, models.ResearchPhase.batch_id.is_(None))
+            )
         if role != "super_admin":
             query = query.filter(
                 or_(models.ResearchPhase.department_id == current_user.department_id, models.ResearchPhase.department_id.is_(None))
@@ -655,6 +783,7 @@ class UserQuery:
                 opens_at=phase.opens_at, deadline_at=phase.deadline_at, defense_date=phase.defense_date,
                 grace_period_enabled=phase.grace_period_enabled, created_by=phase.created_by,
                 created_at=phase.created_at, is_open=is_phase_open(phase), has_ended=phase_has_ended(phase),
+                status=phase.status.value, closed_at=phase.closed_at, closed_by=phase.closed_by,
             )
             for phase in phases
         ]

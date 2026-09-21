@@ -16,6 +16,7 @@ from . import file_storage, models
 from .database import get_db
 from .oauth2 import get_current_user_rest
 from .defenses import is_panel_member
+from .research_workflow import ensure_phase_accepts_submissions, previous_report_block
 from .utils import is_accepted_group_member, is_paper_participant
 
 router = APIRouter(prefix="/files")
@@ -61,6 +62,21 @@ def _download_response(entity, default_filename: str) -> FileResponse:
     )
 
 
+
+def _guard_phase_open(db: Session, phase_id) -> None:
+    """A document is a submission too, so it follows the phase's own rules: an
+    admin who has closed (or not yet opened) a round takes no more files for it."""
+    if not phase_id:
+        return
+    phase = db.query(models.ResearchPhase).filter(models.ResearchPhase.id == phase_id).first()
+    if phase is None or phase.deleted_at is not None:
+        return
+    try:
+        ensure_phase_accepts_submissions(phase)
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+
+
 def _get_proposal_or_404(db: Session, proposal_id: uuid.UUID, *, allow_deleted: bool = False) -> models.Proposals:
     proposal = db.query(models.Proposals).filter(models.Proposals.id == proposal_id).first()
     if not proposal or (proposal.deleted_at is not None and not allow_deleted):
@@ -96,6 +112,7 @@ async def upload_proposal_file(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can't upload a document for this proposal")
     if proposal.status not in {"draft", "changes_requested"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The proposal document can only be changed while it's a draft or has requested changes")
+    _guard_phase_open(db, proposal.phase_id)
 
     data = await file.read()
     try:
@@ -159,6 +176,7 @@ async def upload_progress_report_file(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can't upload a document for this progress report")
     if report.status not in {"draft", "changes_requested"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This progress report has already been submitted")
+    _guard_phase_open(db, report.phase_id)
 
     data = await file.read()
     try:
@@ -212,6 +230,7 @@ async def upload_defense_file(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can't upload a document for this defense")
     if defense.submission_confirmed:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your final thesis has already been submitted")
+    _guard_phase_open(db, defense.phase_id)
 
     data = await file.read()
     try:
@@ -314,6 +333,11 @@ async def upload_final_report_file(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can't upload a final report for this paper")
     if paper.final_report_status in {"submitted", "approved"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your final report has already been submitted")
+    # Same rule submit_final_report applies, so a student isn't allowed to attach a
+    # document they can't submit: every progress round has to be defended first.
+    blocked = previous_report_block(db, paper.id)
+    if blocked:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocked)
 
     data = await file.read()
     try:

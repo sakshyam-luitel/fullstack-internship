@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 from pwdlib import PasswordHash
@@ -24,13 +25,20 @@ async def save_avatar_image(user_id, upload) -> str:
         raise Exception("Only PNG, JPEG, GIF, or WEBP images are allowed")
 
     data = await upload.read()
+    if not data:
+        raise Exception("The selected image is empty")
     if len(data) > MAX_AVATAR_BYTES:
         raise Exception("Image must be smaller than 5MB")
 
     AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    # Drop an earlier avatar saved with a different extension (e.g. .png replaced by .jpg).
+    for old_extension in set(ALLOWED_AVATAR_TYPES.values()) - {extension}:
+        (AVATAR_DIR / f"{user_id}{old_extension}").unlink(missing_ok=True)
     filename = f"{user_id}{extension}"
     (AVATAR_DIR / filename).write_bytes(data)
-    return f"/uploads/avatars/{filename}"
+    # The file name never changes, so a version query makes browsers fetch the new image
+    # instead of showing the cached old one. StaticFiles ignores the query string.
+    return f"/uploads/avatars/{filename}?v={int(time.time())}"
 
 def verify_password(plain_password , hashed_password):
     return password_hash.verify(plain_password , hashed_password)
@@ -69,6 +77,61 @@ def proposal_group_member_users(db, proposal):
     return [user for user in [owner, *members] if user is not None]
 
 
+def active_batch(db):
+    """The cohort currently going through the pipeline, or None before the first one."""
+    from . import models
+
+    return db.query(models.Batch).filter(models.Batch.status == models.BatchStatus.active).first()
+
+
+def active_batch_id(db):
+    batch = active_batch(db)
+    return batch.id if batch else None
+
+
+def batch_schema(db, batch):
+    """One cohort as the clients see it, with the size of what sits under it."""
+    from . import models, schemas
+
+    return schemas.BatchSchema(
+        id=batch.id,
+        label=batch.label,
+        status=batch.status.value,
+        started_at=batch.started_at,
+        archived_at=batch.archived_at,
+        archived_by_name=(
+            db.query(models.User.name).filter(models.User.id == batch.archived_by).scalar()
+            if batch.archived_by else None
+        ),
+        student_count=db.query(models.StudentProfiles).filter(models.StudentProfiles.batch_id == batch.id).count(),
+        phase_count=db.query(models.ResearchPhase).filter(
+            models.ResearchPhase.batch_id == batch.id, models.ResearchPhase.deleted_at.is_(None)
+        ).count(),
+    )
+
+
+def batch_student_ids(db, batch_id):
+    """Every student filed under one cohort. Students with no profile yet belong to
+    no batch, so they are nobody's cohort until one is created for them."""
+    from . import models
+
+    if batch_id is None:
+        return set()
+    return {
+        row[0]
+        for row in db.query(models.StudentProfiles.user_id).filter(models.StudentProfiles.batch_id == batch_id).all()
+    }
+
+
+def student_batch_id(db, user_id):
+    """The cohort a student joined with, falling back to the active one for a
+    student who has no profile row yet (their first submission creates it)."""
+    from . import models
+
+    batch_id = db.query(models.StudentProfiles.batch_id).filter(models.StudentProfiles.user_id == user_id).scalar()
+    return batch_id or active_batch_id(db)
+
+
 def ensure_student_profile(db, user, supervisor_id=None):
     """Create the student's profile automatically — using the degree program chosen
     when their account was created — the first time it's needed (on proposal
@@ -90,6 +153,8 @@ def ensure_student_profile(db, user, supervisor_id=None):
         degree_program_id=user.degree_program_id,
         supervisor_id=supervisor_id,
         status="active",
+        # New students join whichever cohort is running, so nobody assigns it by hand.
+        batch_id=active_batch_id(db),
     )
     db.add(profile)
     return profile

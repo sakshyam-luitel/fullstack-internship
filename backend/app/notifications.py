@@ -129,16 +129,54 @@ def notify_defense_planned(db, defense: models.Defenses, *, rescheduled: bool = 
     )
 
 
-def notify_panel_member_added(db, defense: models.Defenses, professor_id) -> int:
+def notify_defense_outcome(db, defense: models.Defenses, *, defended: bool, comments=None, requires_redefense: bool = False) -> int:
+    """Tell everyone involved how a defense went, with the admin's feedback.
+
+    A student who has to defend again is told so here rather than having to wait
+    for the new date to be planned.
+    """
     subject = defenses.defense_subject(db, defense)
-    kind = defenses.KIND_NAMES[subject.kind].lower()
+    kind = defenses.KIND_NAMES[subject.kind]
+    verdict = "defended" if defended else "not defended"
+    message = f'"{subject.title}" was marked {verdict} after its {kind.lower()}.'
+    if requires_redefense:
+        message += " You will have to defend it again — the department will announce the new date."
+    if comments:
+        message += f" Feedback: {comments}"
     return notify(
         db,
-        [professor_id],
-        type="defense_panel_assigned",
-        title=f"Defense panel: {subject.title}",
-        message=f'You have been added to the panel for the {kind} of "{subject.title}"{_defense_slot(defense)}.',
+        defenses.defense_stakeholders(db, defense, subject),
+        type="defense_defended" if defended else "defense_not_defended",
+        title=f"{kind} {verdict}: {subject.title}",
+        message=message,
         phase_id=defense.phase_id,
         paper_id=subject.paper.id if subject.paper else None,
         defense_id=defense.id,
+    )
+
+
+def notify_supervision_over_capacity(db, proposal, reason: str) -> int:
+    """Tell a department's admins that one of their assignments breaks a
+    supervision rule.
+
+    Supervision capacity is the admin's call at assignment time, so a professor
+    reviewing a proposal already assigned to them is never blocked by it. An
+    assignment made before the rule existed still needs fixing, and this is what
+    puts it in front of the people who can reassign it.
+    """
+    owner = db.query(models.User).filter(models.User.id == proposal.submitted_by).first()
+    if not owner or owner.department_id is None:
+        return 0
+    admin_ids = [
+        row[0] for row in db.query(models.User.id).filter(
+            models.User.role == models.Role.admin,
+            models.User.department_id == owner.department_id,
+        ).all()
+    ]
+    return notify(
+        db,
+        admin_ids,
+        type="supervision_over_capacity",
+        title=f"Supervision limit exceeded: {proposal.title}",
+        message=f'{reason}. Reassign "{proposal.title}" to another professor.',
     )
