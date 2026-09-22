@@ -111,3 +111,18 @@ export const DEFENSE_PANEL_QUERY = gql`
     defensePanel(defenseId: $defenseId) { id defenseId professorId professorName createdAt }
   }
 `;
+
+const BATCH_FIELDS = `id label status startedAt archivedAt archivedByName studentCount phaseCount`;
+
+// Exactly one batch (cohort) is active; the rest are archived history, newest first.
+export const BATCHES_QUERY = gql`
+  query Batches {
+    batches { ${BATCH_FIELDS} }
+  }
+`;
+
+export const CURRENT_BATCH_QUERY = gql`
+  query CurrentBatch {
+    currentBatch { ${BATCH_FIELDS} }
+  }
+`;
