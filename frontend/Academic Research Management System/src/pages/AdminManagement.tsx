@@ -1,9 +1,28 @@
 import { useEffect, useState } from "react";
-import { Download, Eye, Pencil, Plus, Trash2, X } from "lucide-react";
+import {
+  CalendarClock,
+  CalendarDays,
+  Gavel,
+  Layers,
+  Pencil,
+  Plus,
+  Trash2,
+  UserCheck,
+  X,
+} from "lucide-react";
 import { gql } from "@apollo/client";
 import { print } from "graphql";
-import NotificationBell from "../components/NotificationBell";
-import { downloadProposalFile, viewProposalFile } from "../utils/proposalFile";
+import {
+  Card,
+  DocumentActions,
+  EmptyState,
+  SectionHeader,
+  SegmentedControl,
+  StatCard,
+  StatusBadge,
+} from "../components/ui";
+import { useToast } from "../hooks/useToast";
+import { errorMessage, formatStatus } from "../utils/format";
 import {
   DEFENSE_TONE_LABELS,
   DEFENSE_TONE_STYLES,
@@ -11,6 +30,7 @@ import {
   formatDefenseDate,
 } from "../utils/defenses";
 import {
+  CURRENT_BATCH_QUERY,
   DEFENSE_CANDIDATES_QUERY,
   PROFILES_QUERY,
   RESEARCH_PHASES_QUERY,
@@ -105,6 +125,8 @@ interface ScheduledDefense {
 }
 type DefenseKind = "proposal" | "progress_report" | "defense";
 interface DefenseCandidate {
+  // Filled in on the client for the all-levels overview list.
+  degreeLevel?: string;
   kind: DefenseKind;
   targetId: string;
   title: string;
@@ -147,9 +169,42 @@ interface GraphQLResult<T> {
   errors?: { message: string }[];
 }
 
-type Tab = "departments" | "degrees" | "clusters" | "lifecycle";
-type LifecycleSection = "timeline" | "proposals" | "defenses";
 type AdminRole = "admin" | "super_admin";
+export type DegreeLevel = "bachelors" | "masters" | "phd";
+// The screens this module draws; the dashboard shell picks one from the URL.
+export type AdminView =
+  | "overview"
+  | "timeline"
+  | "proposals"
+  | "defenses"
+  | "setup"
+  | "departments";
+// What the sidebar and level picker show as waiting for the admin.
+export interface AdminBadges {
+  proposals: number;
+  defenses: number;
+  // Per level, so the level picker can show the count for the page it is on.
+  proposalsByLevel: Record<DegreeLevel, number>;
+  defensesByLevel: Record<DegreeLevel, number>;
+}
+interface Batch {
+  id: string;
+  label: string;
+  status: string;
+  startedAt: string;
+}
+interface AdminManagementProps {
+  role: AdminRole;
+  view: AdminView;
+  // Timeline, proposals and defenses work on one degree level at a time.
+  level: DegreeLevel;
+  onNavigate: (section: AdminView | "people", level?: DegreeLevel) => void;
+  onBadgesChange?: (badges: AdminBadges) => void;
+  // Bumped by the dashboard when people change elsewhere, so the lists here reload.
+  refreshKey?: number;
+  // The admin's own department, named on the overview.
+  departmentLabel?: string | null;
+}
 const ENDPOINT = import.meta.env.VITE_API_URL
 const DEPARTMENTS = gql`
   query Departments {
@@ -392,13 +447,6 @@ async function request<T>(
   return result.data;
 }
 
-const statusStyles: Record<string, string> = {
-  approved: "bg-emerald-50 text-emerald-700",
-  rejected: "bg-red-50 text-red-700",
-  changes_requested: "bg-amber-50 text-amber-700",
-  assigned: "bg-slate-100 text-slate-600",
-};
-const formatStatus = (status: string) => status.replace(/_/g, " ");
 
 const inputClass =
   "mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100";
@@ -525,18 +573,31 @@ function phaseStatus(phase: ResearchPhase): {
   return { label: "Open", className: "bg-emerald-50 text-emerald-700" };
 }
 
-function AdminManagement({ role }: { role: AdminRole }) {
-  const [tab, setTab] = useState<Tab>(
-    role === "super_admin" ? "departments" : "degrees",
-  );
+function AdminManagement({
+  role,
+  view,
+  level,
+  onNavigate,
+  onBadgesChange,
+  refreshKey = 0,
+  departmentLabel = null,
+}: AdminManagementProps) {
+  const toast = useToast();
+  const lifecycleLevel = level;
   const [departments, setDepartments] = useState<Department[]>([]);
   const [degrees, setDegrees] = useState<DegreeProgram[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Only a failed load stays on screen; results of actions are toasts.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Counts read 0 until the first load lands; don't show them as "nothing to do" yet.
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [areCandidatesLoaded, setAreCandidatesLoaded] = useState(false);
+  const [currentBatch, setCurrentBatch] = useState<Batch | null>(null);
+  // Every level and kind at once, for the overview and the sidebar counts.
+  const [allCandidates, setAllCandidates] = useState<DefenseCandidate[]>([]);
   // Per-form errors so a failed submit shows inside the open modal, not on the page behind it.
   const [departmentFormError, setDepartmentFormError] = useState<string | null>(
     null,
@@ -577,11 +638,7 @@ function AdminManagement({ role }: { role: AdminRole }) {
     ScheduledDefense[]
   >([]);
   const [researchPhases, setResearchPhases] = useState<ResearchPhase[]>([]);
-  const [lifecycleSection, setLifecycleSection] =
-    useState<LifecycleSection>("timeline");
   const [defenseError, setDefenseError] = useState<string | null>(null);
-  // The lifecycle tab works on one degree level at a time.
-  const [lifecycleLevel, setLifecycleLevel] = useState("bachelors");
   const [defenseKind, setDefenseKind] = useState<DefenseKind>("proposal");
   // Which research phase of that kind is shown — progress reports run in rounds
   // (Progress report 1, 2, ...), so their defenses are divided the same way.
@@ -612,7 +669,6 @@ function AdminManagement({ role }: { role: AdminRole }) {
   const [phaseActionId, setPhaseActionId] = useState<string | null>(null);
 
   const loadData = async () => {
-    setError(null);
     try {
       const [
         departmentData,
@@ -643,12 +699,46 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setProfiles(profileData.profiles);
       setScheduledDefenses(defenseData.departmentDefenses);
       setResearchPhases(phaseData.researchPhases);
+      setLoadError(null);
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to load management data.",
+      setLoadError(errorMessage(requestError, "Unable to load management data."));
+    }
+    setIsLoaded(true);
+    // The batch is only shown for context, so a failure here doesn't block the page.
+    try {
+      const batchData = await request<{ currentBatch: Batch | null }>(
+        CURRENT_BATCH_QUERY,
       );
+      setCurrentBatch(batchData.currentBatch);
+    } catch {
+      setCurrentBatch(null);
+    }
+  };
+
+  // Every report that could be defended, across all levels and kinds.
+  const loadAllCandidates = async () => {
+    if (role !== "admin") return;
+    try {
+      const results = await Promise.all(
+        DEGREE_LEVELS.flatMap((item) =>
+          DEFENSE_KINDS.map((kind) =>
+            request<{ defenseCandidates: DefenseCandidate[] }>(
+              DEFENSE_CANDIDATES_QUERY,
+              { degreeLevel: item.value, kind: kind.value },
+            ).then((result) =>
+              result.defenseCandidates.map((candidate) => ({
+                ...candidate,
+                degreeLevel: item.value,
+              })),
+            ),
+          ),
+        ),
+      );
+      setAllCandidates(results.flat());
+    } catch {
+      // The per-level list on the Defenses page reports its own errors.
+    } finally {
+      setAreCandidatesLoaded(true);
     }
   };
 
@@ -658,9 +748,10 @@ function AdminManagement({ role }: { role: AdminRole }) {
     };
 
     void initializeManagementData();
-    // Reloads when the admin asks to see deleted proposals, since that changes the query.
+    // Reloads when the admin asks to see deleted proposals, since that changes the query,
+    // and when people were changed on another page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showDeletedProposals]);
+  }, [showDeletedProposals, refreshKey]);
   const departmentName = (id: string) =>
     departments.find((item) => item.id === id)?.name ?? "Unknown department";
   // Keep cluster rows grouped by department and predictable within each group.
@@ -736,14 +827,6 @@ function AdminManagement({ role }: { role: AdminRole }) {
       ? { row: "bg-emerald-50", cell: "text-emerald-700" }
       : { row: "bg-red-50", cell: "text-red-700" };
   };
-  const awaitingAssignment = (level: string) =>
-    proposals.filter(
-      (proposal) =>
-        proposal.degreeLevel === level &&
-        !proposal.supervisorId &&
-        !proposal.deletedAt &&
-        proposal.status === "submitted",
-    ).length;
   const selectedProposal =
     proposals.find((proposal) => proposal.id === assignmentForm.proposalId) ??
     null;
@@ -793,15 +876,19 @@ function AdminManagement({ role }: { role: AdminRole }) {
   ) {
     phaseChoices.push({ id: NO_PHASE, tab: "No phase", full: "No phase" });
   }
+  // A phase picked at another degree level isn't one of this level's choices; ignore it.
+  const activePhaseId = phaseChoices.some((choice) => choice.id === defensePhaseId)
+    ? defensePhaseId
+    : null;
   const inSelectedPhase = (item: { phaseId: string | null }) =>
-    defensePhaseId === null ||
-    (defensePhaseId === NO_PHASE
+    activePhaseId === null ||
+    (activePhaseId === NO_PHASE
       ? !item.phaseId
-      : item.phaseId === defensePhaseId);
+      : item.phaseId === activePhaseId);
   const kindDefenses = allKindDefenses.filter(inSelectedPhase);
   const visibleCandidates = defenseCandidates.filter(inSelectedPhase);
   const selectedPhaseLabel =
-    phaseChoices.find((choice) => choice.id === defensePhaseId)?.full ?? null;
+    phaseChoices.find((choice) => choice.id === activePhaseId)?.full ?? null;
   // Only professors with a professor profile can sit on a panel.
   const panelChoices = profiles
     .filter((profile) => profile.role.toLowerCase() === "professor")
@@ -851,7 +938,7 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setDepartmentForm({ name: "", code: "" });
       setEditing(null);
       setIsDepartmentFormOpen(false);
-      setMessage("Department saved.");
+      toast.success("Department saved.");
       await loadData();
     } catch (e) {
       setDepartmentFormError(
@@ -877,7 +964,7 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setDegreeForm({ name: "", level: "bachelors", departmentId: "" });
       setEditing(null);
       setIsDegreeFormOpen(false);
-      setMessage("Degree program saved.");
+      toast.success("Degree program saved.");
       await loadData();
     } catch (e) {
       setDegreeFormError(
@@ -897,7 +984,7 @@ function AdminManagement({ role }: { role: AdminRole }) {
       setClusterForm({ name: "", departmentId: "" });
       setEditing(null);
       setIsClusterFormOpen(false);
-      setMessage("Cluster saved.");
+      toast.success("Cluster saved.");
       await loadData();
     } catch (e) {
       setClusterFormError(
@@ -912,14 +999,10 @@ function AdminManagement({ role }: { role: AdminRole }) {
   ) => {
     try {
       await request(mutation, { adminInput: { id } });
-      setMessage(`${label} deleted.`);
+      toast.success(`${label} deleted.`);
       await loadData();
     } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : `Unable to delete ${label.toLowerCase()}.`,
-      );
+      toast.error(errorMessage(e, `Unable to delete ${label.toLowerCase()}.`));
     }
   };
 
@@ -998,12 +1081,13 @@ function AdminManagement({ role }: { role: AdminRole }) {
           panelProfessorIds: planForm.panelIds,
         },
       });
-      setMessage(
+      toast.success(
         `Defense ${planTarget.existing ? "rescheduled" : "planned"} for "${planTarget.title}". The students, supervisor and panel were notified.`,
       );
       setPlanTarget(null);
       await loadData();
       await loadDefenseCandidates(lifecycleLevel, defenseKind);
+      await loadAllCandidates();
     } catch (requestError) {
       setDefenseError(
         requestError instanceof Error
@@ -1023,8 +1107,6 @@ function AdminManagement({ role }: { role: AdminRole }) {
       )
     )
       return;
-    setError(null);
-    setMessage(null);
     setPhaseActionId(phase.id);
     try {
       const result = await request<{
@@ -1033,17 +1115,15 @@ function AdminManagement({ role }: { role: AdminRole }) {
         adminInput: { id: phase.id },
       });
       const notified = result.openResearchPhase?.notifiedCount ?? null;
-      setMessage(
+      toast.success(
         open
           ? `"${phase.label}" is open${notified ? ` — ${notified} ${notified === 1 ? "person was" : "people were"} notified` : ""}.`
           : `"${phase.label}" is closed. The next phase for this degree level can now be started.`,
       );
       await loadData();
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : `Unable to ${open ? "open" : "close"} the phase.`,
+      toast.error(
+        errorMessage(requestError, `Unable to ${open ? "open" : "close"} the phase.`),
       );
     } finally {
       setPhaseActionId(null);
@@ -1057,18 +1137,12 @@ function AdminManagement({ role }: { role: AdminRole }) {
       )
     )
       return;
-    setError(null);
-    setMessage(null);
     try {
       await request(DELETE_RESEARCH_PHASE, { adminInput: { id: phase.id } });
-      setMessage(`"${phase.label}" was removed from the timeline.`);
+      toast.success(`"${phase.label}" was removed from the timeline.`);
       await loadData();
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Unable to delete the research phase.",
-      );
+      toast.error(errorMessage(requestError, "Unable to delete the research phase."));
     }
   };
 
@@ -1203,7 +1277,7 @@ function AdminManagement({ role }: { role: AdminRole }) {
         : editingPhaseId
           ? "Nobody was notified — a phase only announces itself once it is open."
           : "Open it when the previous phase for this degree level has closed.";
-      setMessage(
+      toast.success(
         `${editingPhaseId ? "Research phase updated" : "Research phase added to the timeline"}. ${audience}`,
       );
       closePhaseForm();
@@ -1231,7 +1305,7 @@ function AdminManagement({ role }: { role: AdminRole }) {
           status: "assigned",
         },
       });
-      setMessage("Proposal assigned.");
+      toast.success("Proposal assigned.");
       setAssignmentForm({ proposalId: "", supervisorId: "", clusterId: "" });
       setEditingProposalId(null);
       setIsProposalFormOpen(false);
@@ -1267,229 +1341,774 @@ function AdminManagement({ role }: { role: AdminRole }) {
     }
   };
 
-  const tabs: [Tab, string][] =
-    role === "super_admin"
-      ? [["departments", "Departments"]]
-      : [
-          ["degrees", "Degree programs"],
-          ["clusters", "Clusters"],
-          ["lifecycle", "Research timeline & defenses"],
-        ];
+  useEffect(() => {
+    const initializeCandidates = async () => {
+      await loadAllCandidates();
+    };
+    void initializeCandidates();
+    // Loaded once; savePlan refreshes it after every change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The Defenses page lists one level and kind at a time; reload it when the
+  // admin opens the page or picks another level in the header.
+  useEffect(() => {
+    if (view !== "defenses") return;
+    const reloadCandidates = async () => {
+      await loadDefenseCandidates(level, defenseKind);
+    };
+    void reloadCandidates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, level]);
+
+  // What is waiting on the admin, for the overview cards, sidebar and level picker.
+  const waitingProposals = proposals.filter(
+    (proposal) =>
+      !proposal.supervisorId &&
+      !proposal.deletedAt &&
+      proposal.status === "submitted",
+  );
+  const unplanned = allCandidates.filter((candidate) => !candidate.defense);
+  const awaitingVerdict = scheduledDefenses.filter(
+    (defense) => defense.hasEnded && defense.currentStatus === "pending",
+  );
+  const openPhases = researchPhases.filter((phase) => phase.status === "open");
+  const upcomingDefenses = scheduledDefenses
+    .filter((defense) => !defense.hasEnded && defense.currentStatus === "pending")
+    .sort(
+      (first, second) =>
+        new Date(first.defenseDate).getTime() -
+        new Date(second.defenseDate).getTime(),
+    );
+  const professorsWithoutProfile = professors.filter(
+    (professor) =>
+      !profiles.some(
+        (profile) =>
+          profile.userId === professor.id &&
+          profile.role.toLowerCase() === "professor",
+      ),
+  );
+  const proposalsAt = (value: string) =>
+    waitingProposals.filter((proposal) => proposal.degreeLevel === value).length;
+  const unplannedAt = (value: string) =>
+    unplanned.filter((candidate) => candidate.degreeLevel === value).length;
+  // Primitive values, so the effect below only runs when a count really changes.
+  const proposalsBachelors = proposalsAt("bachelors");
+  const proposalsMasters = proposalsAt("masters");
+  const proposalsPhd = proposalsAt("phd");
+  const defensesBachelors = unplannedAt("bachelors");
+  const defensesMasters = unplannedAt("masters");
+  const defensesPhd = unplannedAt("phd");
+  useEffect(() => {
+    onBadgesChange?.({
+      proposals: proposalsBachelors + proposalsMasters + proposalsPhd,
+      defenses: defensesBachelors + defensesMasters + defensesPhd,
+      proposalsByLevel: {
+        bachelors: proposalsBachelors,
+        masters: proposalsMasters,
+        phd: proposalsPhd,
+      },
+      defensesByLevel: {
+        bachelors: defensesBachelors,
+        masters: defensesMasters,
+        phd: defensesPhd,
+      },
+    });
+  }, [
+    onBadgesChange,
+    proposalsBachelors,
+    proposalsMasters,
+    proposalsPhd,
+    defensesBachelors,
+    defensesMasters,
+    defensesPhd,
+  ]);
+
+  const unplannedOfKind = (kind: DefenseKind) =>
+    unplanned.filter(
+      (candidate) =>
+        candidate.degreeLevel === lifecycleLevel && candidate.kind === kind,
+    ).length;
+  const sortedLevelProposals = [...levelProposals].sort(
+    (first, second) =>
+      Number(waitingProposals.includes(second)) -
+        Number(waitingProposals.includes(first)) ||
+      Number(Boolean(first.deletedAt)) - Number(Boolean(second.deletedAt)),
+  );
+  const openAssignment = (proposal: Proposal | null) => {
+    setEditingProposalId(proposal?.id ?? null);
+    setAssignmentForm({
+      proposalId: proposal?.id ?? "",
+      supervisorId: proposal?.supervisorId ?? "",
+      clusterId: proposal?.clusterId ?? "",
+    });
+    setGroupStudentId("");
+    setProposalFormError(null);
+    setIsProposalFormOpen(true);
+  };
+  const iconButton =
+    "inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700";
+  const deleteButton =
+    "inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700";
+
   return (
-    <div className="min-h-full p-6">
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-4">
-        {tabs.map(([value, label]) => (
+    <>
+      {loadError && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+          {loadError}
           <button
-            key={value}
             type="button"
-            onClick={() => {
-              setTab(value);
-              setError(null);
-              setMessage(null);
-            }}
-            className={`rounded-lg px-3 py-2 text-sm font-medium ${tab === value ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+            onClick={() => void loadData()}
+            className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium hover:bg-red-100"
           >
-            {label}
+            Try again
           </button>
-        ))}
-        {/* Admins get the same bell as the other roles — it's where an assignment that
-            breaks a supervision rule is reported to them. */}
-        <div className="ml-auto">
-          <NotificationBell />
         </div>
-      </div>
-      {message && (
-        <p className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
-          {message}
-        </p>
       )}
-      {error && (
-        <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-          {error}
-        </p>
+
+      {view === "overview" && !(isLoaded && areCandidatesLoaded) && (
+        <p className="text-sm text-slate-500">Loading your department...</p>
       )}
-      {tab === "departments" && (
-        <section className="mt-6">
-          <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
-            <div>
-              <h2 className="text-lg font-medium text-slate-800">
-                Departments
-              </h2>
-              <p className="text-sm text-slate-500">
-                Manage academic departments
+      {view === "overview" && isLoaded && areCandidatesLoaded && (
+        <div className="space-y-6">
+          <SectionHeader
+            title="What needs your attention"
+            description={[
+              departmentLabel,
+              currentBatch ? `Current batch: ${currentBatch.label}` : null,
+              "Click a card to go straight to it.",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              icon={UserCheck}
+              label="Proposals need a supervisor"
+              value={waitingProposals.length}
+              hint="Submitted and not yet assigned"
+              highlight={waitingProposals.length > 0}
+              onClick={() => onNavigate("proposals")}
+            />
+            <StatCard
+              icon={CalendarClock}
+              label="Not yet scheduled for a defense"
+              value={unplanned.length}
+              hint="Proposals and reports with no defense planned"
+              highlight={unplanned.length > 0}
+              onClick={() => onNavigate("defenses")}
+            />
+            <StatCard
+              icon={Gavel}
+              label="Waiting for panel verdicts"
+              value={awaitingVerdict.length}
+              hint="The panels decide these themselves"
+              onClick={() => onNavigate("defenses")}
+            />
+            <StatCard
+              icon={Layers}
+              label="Open phases"
+              value={openPhases.length}
+              hint="Across all degree levels"
+              onClick={() => onNavigate("timeline")}
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            {DEGREE_LEVELS.map((item) => {
+              const phases = researchPhases
+                .filter((phase) => phase.degreeLevel === item.value)
+                .sort((first, second) => first.sequenceNumber - second.sequenceNumber);
+              const open = phases.find((phase) => phase.status === "open");
+              const next = phases.find((phase) => phase.status === "pending");
+              const proposalsHere = waitingProposals.filter(
+                (proposal) => proposal.degreeLevel === item.value,
+              ).length;
+              const unplannedHere = unplanned.filter(
+                (candidate) => candidate.degreeLevel === item.value,
+              ).length;
+              return (
+                <Card key={item.value}>
+                  <h3 className="font-semibold text-slate-900">{item.label}</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {open ? (
+                      <>
+                        <span className="font-medium text-emerald-700">Open:</span>{" "}
+                        {open.label}
+                        {open.deadlineAt
+                          ? ` · deadline ${formatPhaseDateTime(open.deadlineAt)}`
+                          : open.defenseDate
+                            ? ` · defense day ${formatDefenseDate(open.defenseDate)}`
+                            : ""}
+                      </>
+                    ) : next ? (
+                      <>No phase open. Next up: {next.label}</>
+                    ) : phases.length === 0 ? (
+                      "No timeline yet"
+                    ) : (
+                      "Every phase is closed"
+                    )}
+                  </p>
+                  <ul className="mt-3 space-y-1 text-sm">
+                    <li className="flex justify-between gap-2">
+                      <span className="text-slate-600">Need a supervisor</span>
+                      <span className={proposalsHere ? "font-semibold text-amber-700" : "text-slate-400"}>
+                        {proposalsHere}
+                      </span>
+                    </li>
+                    <li className="flex justify-between gap-2">
+                      <span className="text-slate-600">Not yet scheduled</span>
+                      <span className={unplannedHere ? "font-semibold text-amber-700" : "text-slate-400"}>
+                        {unplannedHere}
+                      </span>
+                    </li>
+                  </ul>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {(
+                      [
+                        ["timeline", "Timeline"],
+                        ["proposals", "Proposals"],
+                        ["defenses", "Defenses"],
+                      ] as const
+                    ).map(([target, label]) => (
+                      <button
+                        key={target}
+                        type="button"
+                        onClick={() => onNavigate(target, item.value)}
+                        className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <h3 className="text-sm font-semibold text-slate-900">Upcoming defenses</h3>
+              {upcomingDefenses.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-500">Nothing scheduled.</p>
+              ) : (
+                <ul className="mt-2 divide-y divide-slate-100">
+                  {upcomingDefenses.slice(0, 6).map((defense) => (
+                    <li key={defense.id} className="py-2 text-sm">
+                      <p className="font-medium text-slate-800">
+                        {defense.paperTitle ?? "Untitled research"}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {defenseKindLabel(defense.kind)} ·{" "}
+                        {degreeLevelLabel(defense.degreeLevel ?? "")} ·{" "}
+                        {describeDefenseSlot(defense)}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+            <Card>
+              <h3 className="text-sm font-semibold text-slate-900">People</h3>
+              <p className="mt-2 text-sm text-slate-600">
+                {students.length} student{students.length === 1 ? "" : "s"} ·{" "}
+                {professors.length} professor{professors.length === 1 ? "" : "s"}
               </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(null);
-                setDepartmentForm({ name: "", code: "" });
-                setIsDepartmentFormOpen(true);
-              }}
-              className={buttonClass}
-            >
-              <Plus size={16} aria-hidden="true" />
-              Create department
-            </button>
+              {professorsWithoutProfile.length > 0 && (
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  {professorsWithoutProfile.length} professor
+                  {professorsWithoutProfile.length === 1 ? " has" : "s have"} no
+                  profile yet, so they can't sit on a defense panel.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => onNavigate("people")}
+                className="mt-3 text-sm font-medium text-blue-700 hover:underline"
+              >
+                Manage people
+              </button>
+            </Card>
           </div>
-          <div className="overflow-x-auto pt-6">
-            <table className="w-full min-w-[640px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3">ID</th>
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Code</th>
-                  <th className="px-4 py-3">Created At</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {departments.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className="px-4 py-8 text-center text-slate-500"
-                    >
-                      No departments found.
-                    </td>
-                  </tr>
-                ) : (
-                  departments.map((item) => (
-                    <tr key={item.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">
-                        {item.id}
-                      </td>
-                      <td className="px-4 py-3 font-medium text-slate-800">
-                        {item.name}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">{item.code}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-600">
-                        {new Date(item.createdAt).toLocaleString()}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          type="button"
-                          title={`Edit ${item.name}`}
-                          aria-label={`Edit ${item.name}`}
-                          onClick={() => {
-                            editable("department", item.id);
-                            setDepartmentForm({
-                              name: item.name,
-                              code: item.code,
-                            });
-                            setIsDepartmentFormOpen(true);
-                          }}
-                          className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                        >
-                          <Pencil size={17} aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          title={`Delete ${item.name}`}
-                          aria-label={`Delete ${item.name}`}
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                `Delete department "${item.name}"?`,
-                              )
-                            ) {
-                              void deleteItem(
-                                DELETE_DEPARTMENT,
-                                item.id,
-                                "Department",
-                              );
-                            }
-                          }}
-                          className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700"
-                        >
-                          <Trash2 size={17} aria-hidden="true" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        </div>
       )}
-      {tab === "degrees" && (
-        <section className="mt-6">
-          <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
-            <div>
-              <h2 className="text-lg font-medium text-slate-800">
-                Degree programs
-              </h2>
-              <p className="text-sm text-slate-500">Manage degree programs</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(null);
-                setDegreeForm({
-                  name: "",
-                  level: "bachelors",
-                  departmentId: "",
-                });
-                setIsDegreeFormOpen(true);
-              }}
-              className={buttonClass}
+
+      {view === "timeline" && (
+        <div className="space-y-4">
+          <SectionHeader
+            title={`${degreeLevelLabel(lifecycleLevel)} research timeline`}
+            description="Draft the proposal, progress report and final defense phases, then open each one in order. Opening a phase notifies the students and professors involved. Phases can be deleted once they've ended."
+            action={
+              <button
+                type="button"
+                onClick={() => openNewPhaseForm(lifecycleLevel)}
+                className={buttonClass}
+              >
+                <Plus size={16} aria-hidden="true" />
+                Add research phase
+              </button>
+            }
+          />
+          {currentBatch && (
+            <p className="text-sm text-slate-500">
+              Batch: <span className="font-medium text-slate-700">{currentBatch.label}</span>
+              {" · "}started {formatDefenseDate(currentBatch.startedAt)}
+            </p>
+          )}
+          {levelPhases.length === 0 ? (
+            <EmptyState
+              title={`No ${degreeLevelLabel(lifecycleLevel)} research phases scheduled yet`}
             >
-              <Plus size={16} aria-hidden="true" />
-              Create degree program
-            </button>
-          </div>
-          <div className="overflow-x-auto pt-6">
-            <table className="w-full min-w-[800px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3">ID</th>
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Level</th>
-                  <th className="px-4 py-3">Department</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {degrees.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className="px-4 py-8 text-center text-slate-500"
-                    >
-                      No degree programs found.
-                    </td>
-                  </tr>
-                ) : (
-                  degrees.map((item) => (
-                    <tr key={item.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">
-                        {item.id}
-                      </td>
-                      <td className="px-4 py-3 font-medium text-slate-800">
-                        {item.name}
-                      </td>
-                      <td className="px-4 py-3 capitalize text-slate-600">
-                        {degreeLevelLabel(item.level)}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {departmentName(item.departmentId)}
-                      </td>
-                      <td className="px-4 py-3 text-right">
+              Start with a proposal phase, then add a progress report phase for
+              each review round and a final defense.
+            </EmptyState>
+          ) : (
+            <Card>
+              <ol className="space-y-4 border-l-2 border-slate-200 pl-5">
+                {levelPhases.map((phase) => {
+                  const status = phaseStatus(phase);
+                  return (
+                    <li key={phase.id} className="relative">
+                      <span className="absolute -left-[33px] top-0 flex size-6 items-center justify-center rounded-full border-2 border-white bg-blue-600 text-[11px] font-semibold text-white">
+                        {phase.sequenceNumber}
+                      </span>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-800">{phase.label}</p>
+                          <p className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+                              {phaseTypeLabel(phase.phaseType)}
+                            </span>
+                            <span className={`rounded-full px-2 py-0.5 font-medium ${status.className}`}>
+                              {status.label}
+                            </span>
+                          </p>
+                          <p className="mt-1.5 text-xs text-slate-500">
+                            {phase.phaseType === "defense"
+                              ? `Defense day: ${phase.defenseDate ? new Date(phase.defenseDate).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not set"}`
+                              : `${phase.opensAt ? formatPhaseDateTime(phase.opensAt) : "?"} → deadline ${phase.deadlineAt ? formatPhaseDateTime(phase.deadlineAt) : "?"}`}
+                            {phase.closedAt
+                              ? ` · closed ${formatPhaseDateTime(phase.closedAt)}`
+                              : ""}
+                          </p>
+                        </div>
+                        <span className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={phaseActionId === phase.id}
+                            title={
+                              phase.status === "open"
+                                ? `Close ${phase.label} so the next phase can start`
+                                : `Start ${phase.label} — only possible once every earlier phase for this degree level has closed`
+                            }
+                            onClick={() =>
+                              void setPhaseOpen(phase, phase.status !== "open")
+                            }
+                            className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                              phase.status === "open"
+                                ? "border-slate-300 text-slate-700 hover:bg-slate-100"
+                                : "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                            }`}
+                          >
+                            {phase.status === "open"
+                              ? "Close"
+                              : phase.status === "closed"
+                                ? "Reopen"
+                                : "Open"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={phase.status === "closed"}
+                            title={
+                              phase.status === "closed"
+                                ? "Reopen the phase to change its schedule"
+                                : `Edit ${phase.label}`
+                            }
+                            aria-label={`Edit ${phase.label}`}
+                            onClick={() => openEditPhaseForm(phase)}
+                            className={`${iconButton} disabled:cursor-not-allowed disabled:opacity-40`}
+                          >
+                            <Pencil size={17} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!phase.hasEnded}
+                            title={
+                              phase.hasEnded
+                                ? `Delete ${phase.label}`
+                                : phase.phaseType === "defense"
+                                  ? "Can be deleted after the defense day"
+                                  : "Can be deleted after the deadline"
+                            }
+                            aria-label={`Delete ${phase.label}`}
+                            onClick={() => void deletePhase(phase)}
+                            className={`${deleteButton} disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500`}
+                          >
+                            <Trash2 size={17} aria-hidden="true" />
+                          </button>
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+              <p className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-500">
+                One phase is open at a time per degree level. Open the next one
+                once the one before it is closed; closing a phase only stops new
+                submissions, so its reviews and defenses can still go ahead.
+              </p>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {view === "proposals" && (
+        <div className="space-y-4">
+          <SectionHeader
+            title={`${degreeLevelLabel(lifecycleLevel)} proposals`}
+            description={`Assign each submitted ${degreeLevelLabel(lifecycleLevel)} proposal to a supervising professor and, optionally, a cluster. Proposals waiting for a supervisor are listed first.`}
+            action={
+              <>
+                {/* A deleted proposal is only hidden — its row and PDF are still on file. */}
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={showDeletedProposals}
+                    onChange={(event) => setShowDeletedProposals(event.target.checked)}
+                    className="size-4 rounded border-slate-300"
+                  />
+                  Show deleted
+                </label>
+                <button type="button" onClick={() => openAssignment(null)} className={buttonClass}>
+                  <Plus size={16} aria-hidden="true" />
+                  Assign proposal
+                </button>
+              </>
+            }
+          />
+          {sortedLevelProposals.length === 0 ? (
+            <EmptyState title={`No ${degreeLevelLabel(lifecycleLevel)} proposals yet`}>
+              Proposals appear here once students submit them.
+            </EmptyState>
+          ) : (
+            <Card className="!p-0">
+              <ul className="divide-y divide-slate-100">
+                {sortedLevelProposals.map((proposal) => {
+                  const tone = assignmentTone(proposal);
+                  return (
+                    <li key={proposal.id} className={`p-4 ${tone.row}`}>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-900">{proposal.title}</p>
+                          <p className="mt-0.5 text-xs text-slate-600">
+                            {proposal.submittedByName ?? "Unknown student"}
+                            {proposal.degreeLevel === "bachelors"
+                              ? ` · group ${proposal.groupMembers.length + 1}/3${proposal.groupMembers.length > 0 ? `: ${proposal.groupMembers.map((member) => member.name).join(", ")}` : ""}`
+                              : " · individual"}
+                          </p>
+                          <p className={`mt-0.5 text-xs font-medium ${tone.cell}`}>
+                            Supervisor: {proposal.supervisorName ?? "not assigned yet"}
+                          </p>
+                          {proposal.reviewComment && (
+                            <p className="mt-1 text-xs text-slate-500">
+                              {proposal.reviewedByName ? `${proposal.reviewedByName}: ` : ""}"
+                              {proposal.reviewComment}"
+                            </p>
+                          )}
+                          {proposal.deletedAt && (
+                            <p className="mt-1 text-xs text-slate-400">
+                              Deleted by {proposal.deletedByName ?? "an admin"} on{" "}
+                              {new Date(proposal.deletedAt).toLocaleDateString()}
+                            </p>
+                          )}
+                          <div className="mt-2">
+                            <DocumentActions
+                              kind="proposals"
+                              entityId={proposal.id}
+                              filename={proposal.originalFilename}
+                              fallbackName="proposal.pdf"
+                              onError={(text) => toast.error(text)}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap items-center gap-2">
+                          <StatusBadge status={proposal.status} />
+                          {proposal.deletedAt && <StatusBadge status="deleted" label="Deleted" />}
+                          {!proposal.deletedAt && (
+                            <button
+                              type="button"
+                              onClick={() => openAssignment(proposal)}
+                              className={
+                                proposal.supervisorId
+                                  ? "inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                  : "inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                              }
+                            >
+                              {proposal.supervisorId ? "Change assignment" : "Assign supervisor"}
+                            </button>
+                          )}
+                          {proposal.status === "rejected" && !proposal.deletedAt && (
+                            <button
+                              type="button"
+                              title={`Delete rejected proposal "${proposal.title}"`}
+                              aria-label={`Delete rejected proposal "${proposal.title}"`}
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `Delete rejected proposal "${proposal.title}"? It will remain visible in history for the student and professor.`,
+                                  )
+                                ) {
+                                  void deleteItem(DELETE_PROPOSAL_AS_ADMIN, proposal.id, "Proposal");
+                                }
+                              }}
+                              className={deleteButton}
+                            >
+                              <Trash2 size={17} aria-hidden="true" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {view === "defenses" && (
+        <div className="space-y-4">
+          <SectionHeader
+            title={`${degreeLevelLabel(lifecycleLevel)} defenses`}
+            description="Every proposal, progress report and approved final report can be defended. Plan when and where, choose an odd-sized panel, and the students, supervisor and panel are notified. The panel decides the outcome by majority."
+          />
+          <SegmentedControl
+            label="Report type"
+            options={DEFENSE_KINDS.map((kind) => ({
+              value: kind.value,
+              label: kind.label,
+              count: unplannedOfKind(kind.value) || undefined,
+            }))}
+            value={defenseKind}
+            onChange={(kind) => showDefenses(lifecycleLevel, kind)}
+          />
+          {/* Progress reports run in rounds, so their defenses divide into the same
+              phases. A kind with a single round has nothing to divide. */}
+          {phaseChoices.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-slate-400">Phase</span>
+              <SegmentedControl
+                label="Research phase"
+                options={[
+                  { value: "all", label: "All phases" },
+                  ...phaseChoices.map((choice) => ({ value: choice.id, label: choice.tab })),
+                ]}
+                value={activePhaseId ?? "all"}
+                onChange={(value) => setDefensePhaseId(value === "all" ? null : value)}
+              />
+            </div>
+          )}
+          {defenseError && !planTarget && (
+            <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{defenseError}</p>
+          )}
+
+          <section>
+            <h3 className="text-sm font-semibold text-slate-900">
+              Needs a defense
+              {selectedPhaseLabel ? ` · ${selectedPhaseLabel}` : ""}
+            </h3>
+            {isLoadingCandidates ? (
+              <p className="mt-2 text-sm text-slate-500">Loading...</p>
+            ) : visibleCandidates.filter((candidate) => !candidate.defense).length === 0 ? (
+              <p className="mt-2 rounded-xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+                {visibleCandidates.length > 0
+                  ? "Everything here already has a defense planned."
+                  : defenseKind === "defense"
+                    ? `No ${degreeLevelLabel(lifecycleLevel)} paper has an approved final report yet.`
+                    : `No ${degreeLevelLabel(lifecycleLevel)} ${defenseReportLabel(defenseKind).toLowerCase()} has been submitted yet.`}
+              </p>
+            ) : (
+              <Card className="mt-2 !p-0">
+                <ul className="divide-y divide-slate-100">
+                  {visibleCandidates
+                    .filter((candidate) => !candidate.defense)
+                    .map((candidate) => (
+                      <li
+                        key={candidate.targetId}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-800">{candidate.title}</p>
+                          <p className="text-xs text-slate-500">
+                            {defenseReportLabel(candidate.kind)}
+                            {candidate.phaseLabel ? ` · ${candidate.phaseLabel}` : ""} ·{" "}
+                            {candidate.studentNames.join(", ") || "No students"} · Supervisor:{" "}
+                            {candidate.supervisorName ?? "not assigned"} ·{" "}
+                            <span className="capitalize">{formatStatus(candidate.status)}</span>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openPlanForm({
+                              kind: candidate.kind,
+                              targetId: candidate.targetId,
+                              title: candidate.title,
+                              phaseId: candidate.phaseId,
+                              suggestedDate: candidate.suggestedDate,
+                              supervisorName: candidate.supervisorName,
+                              existing: null,
+                            })
+                          }
+                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                        >
+                          Plan defense
+                        </button>
+                      </li>
+                    ))}
+                </ul>
+              </Card>
+            )}
+          </section>
+
+          <section>
+            <h3 className="text-sm font-semibold text-slate-900">
+              Planned {defenseKindLabel(defenseKind).toLowerCase()}s
+              {selectedPhaseLabel ? ` · ${selectedPhaseLabel}` : ""}
+            </h3>
+            {kindDefenses.length === 0 ? (
+              <p className="mt-2 rounded-xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+                {selectedPhaseLabel
+                  ? `Nothing planned for ${selectedPhaseLabel} yet.`
+                  : "Nothing planned yet."}
+              </p>
+            ) : (
+              <Card className="mt-2 !p-0">
+                <ul className="divide-y divide-slate-100">
+                  {kindDefenses.map((defense) => {
+                    const targetId =
+                      defense.proposalId ?? defense.progressReportId ?? defense.paperId;
+                    const tone = defenseTone(defense);
+                    return (
+                      <li key={defense.id} className={`p-4 text-sm ${DEFENSE_TONE_STYLES[tone].row}`}>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-medium text-slate-800">
+                              {defense.paperTitle ?? "Untitled research"}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {defenseReportLabel(defense.kind)}
+                              {defense.phaseLabel ? ` · ${defense.phaseLabel}` : ""} ·{" "}
+                              {defense.studentNames.join(", ") || "—"}
+                            </p>
+                            <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                              <CalendarDays size={14} aria-hidden="true" />
+                              {formatDefenseDate(defense.defenseDate)}
+                              {defense.scheduledTime ? ` · ${defense.scheduledTime.slice(0, 5)}` : ""}
+                              {` · ${defense.location ?? "location not set"}`}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              Panel: {defense.panelNames.join(", ") || "No panel yet"}
+                            </p>
+                            {defense.kind === "defense" && defense.currentStatus === "pending" && (
+                              <p className="text-xs text-slate-500">
+                                {defense.submissionConfirmed ? "Thesis submitted" : "Awaiting thesis"}
+                              </p>
+                            )}
+                            {defense.requiresRedefense && (
+                              <p className="mt-1 text-xs font-medium text-amber-800">Has to defend again</p>
+                            )}
+                            {defense.outcomeComments && (
+                              <p className="mt-1 max-w-xl whitespace-pre-line text-xs text-slate-600">
+                                "{defense.outcomeComments}"
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 flex-wrap items-center gap-2">
+                            <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${DEFENSE_TONE_STYLES[tone].badge}`}>
+                              {DEFENSE_TONE_LABELS[tone]}
+                            </span>
+                            {targetId && defense.currentStatus === "pending" && !defense.hasEnded && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openPlanForm({
+                                    kind: defense.kind,
+                                    targetId,
+                                    title: defense.paperTitle ?? "this report",
+                                    phaseId: defense.phaseId,
+                                    suggestedDate: null,
+                                    supervisorName: defense.supervisorName,
+                                    existing: defense,
+                                  })
+                                }
+                                className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
+                              >
+                                Reschedule
+                              </button>
+                            )}
+                            {/* The panel's own majority settles a heard defense. */}
+                            {defense.hasEnded && defense.currentStatus === "pending" && (
+                              <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600">
+                                Awaiting panel verdicts
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </Card>
+            )}
+          </section>
+        </div>
+      )}
+
+      {view === "setup" && (
+        <div className="space-y-8">
+          <section className="space-y-3">
+            <SectionHeader
+              title="Degree programs"
+              description="The programs students can be enrolled in. A program is created automatically the first time you add a student at a level that has none."
+              action={
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditing(null);
+                    setDegreeForm({ name: "", level: "bachelors", departmentId: "" });
+                    setIsDegreeFormOpen(true);
+                  }}
+                  className={buttonClass}
+                >
+                  <Plus size={16} aria-hidden="true" />
+                  Add degree program
+                </button>
+              }
+            />
+            {degrees.length === 0 ? (
+              <EmptyState title="No degree programs yet" />
+            ) : (
+              <Card className="!p-0">
+                <ul className="divide-y divide-slate-100">
+                  {degrees.map((item) => (
+                    <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                      <span className="min-w-0">
+                        <span className="block font-medium text-slate-800">{item.name}</span>
+                        <span className="block text-xs text-slate-500">{degreeLevelLabel(item.level)}</span>
+                      </span>
+                      <span className="flex shrink-0">
                         <button
                           type="button"
                           title={`Edit ${item.name}`}
                           aria-label={`Edit ${item.name}`}
                           onClick={() => {
                             editable("degree", item.id);
-                            setDegreeForm({
-                              name: item.name,
-                              level: item.level,
-                              departmentId: item.departmentId,
-                            });
+                            setDegreeForm({ name: item.name, level: item.level, departmentId: item.departmentId });
                             setIsDegreeFormOpen(true);
                           }}
-                          className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
+                          className={iconButton}
                         >
                           <Pencil size={17} aria-hidden="true" />
                         </button>
@@ -1497,215 +2116,59 @@ function AdminManagement({ role }: { role: AdminRole }) {
                           type="button"
                           title={`Delete ${item.name}`}
                           aria-label={`Delete ${item.name}`}
-                          onClick={() =>
-                            void deleteItem(
-                              DELETE_DEGREE,
-                              item.id,
-                              "Degree program",
-                            )
-                          }
-                          className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700"
+                          onClick={() => {
+                            if (window.confirm(`Delete degree program "${item.name}"?`))
+                              void deleteItem(DELETE_DEGREE, item.id, "Degree program");
+                          }}
+                          className={deleteButton}
                         >
                           <Trash2 size={17} aria-hidden="true" />
                         </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          {isDegreeFormOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
-              <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-xl font-semibold text-slate-900">
-                      {editing?.type === "degree"
-                        ? "Edit degree program"
-                        : "Create degree program"}
-                    </h2>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {editing?.type === "degree"
-                        ? "Update the degree program details."
-                        : "Add a degree program to a department."}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label="Close degree program form"
-                    onClick={() => {
-                      setEditing(null);
-                      setDegreeForm({
-                        name: "",
-                        level: "bachelors",
-                        departmentId: "",
-                      });
-                      setIsDegreeFormOpen(false);
-                      setDegreeFormError(null);
-                    }}
-                    className="flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-                  >
-                    <X size={18} aria-hidden="true" />
-                  </button>
-                </div>
-                <form className="mt-6 space-y-4" onSubmit={saveDegree}>
-                  <label className="block text-sm font-medium text-slate-700">
-                    Program name
-                    <input
-                      required
-                      value={degreeForm.name}
-                      onChange={(event) =>
-                        setDegreeForm({
-                          ...degreeForm,
-                          name: event.target.value,
-                        })
-                      }
-                      className={inputClass}
-                    />
-                  </label>
-                  <label className="block text-sm font-medium text-slate-700">
-                    Level
-                    <select
-                      required
-                      value={degreeForm.level}
-                      onChange={(event) =>
-                        setDegreeForm({
-                          ...degreeForm,
-                          level: event.target.value,
-                        })
-                      }
-                      className={inputClass}
-                    >
-                      <option value="bachelors">Bachelor's</option>
-                      <option value="masters">Master's</option>
-                      <option value="phd">PhD</option>
-                    </select>
-                  </label>
-                  <label className="block text-sm font-medium text-slate-700">
-                    Department
-                    <select
-                      required
-                      value={degreeForm.departmentId}
-                      onChange={(event) =>
-                        setDegreeForm({
-                          ...degreeForm,
-                          departmentId: event.target.value,
-                        })
-                      }
-                      className={inputClass}
-                    >
-                      <option value="">Select department</option>
-                      {departments.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {degreeFormError && (
-                    <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                      {degreeFormError}
-                    </p>
-                  )}
-                  <div className="flex justify-end gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditing(null);
-                        setDegreeForm({
-                          name: "",
-                          level: "bachelors",
-                          departmentId: "",
-                        });
-                        setIsDegreeFormOpen(false);
-                        setDegreeFormError(null);
-                      }}
-                      className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-                    >
-                      {editing?.type === "degree"
-                        ? "Save changes"
-                        : "Create degree program"}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-      {tab === "clusters" && (
-        <section className="mt-6">
-          <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
-            <div>
-              <h2 className="text-lg font-medium text-slate-800">Clusters</h2>
-              <p className="text-sm text-slate-500">Manage research clusters</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(null);
-                setClusterForm({ name: "", departmentId: "" });
-                setIsClusterFormOpen(true);
-              }}
-              className={buttonClass}
-            >
-              <Plus size={16} aria-hidden="true" />
-              Create cluster
-            </button>
-          </div>
-          <div className="overflow-x-auto pt-6">
-            <table className="w-full min-w-[640px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3">ID</th>
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Department</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {clusters.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={4}
-                      className="px-4 py-8 text-center text-slate-500"
-                    >
-                      No clusters found.
-                    </td>
-                  </tr>
-                ) : (
-                  sortedClusters.map((item) => (
-                    <tr key={item.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">
-                        {item.id}
-                      </td>
-                      <td className="px-4 py-3 font-medium text-slate-800">
-                        {item.name}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {departmentName(item.departmentId)}
-                      </td>
-                      <td className="px-4 py-3 text-right">
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+          </section>
+          <section className="space-y-3">
+            <SectionHeader
+              title="Research clusters"
+              description="Groups of related research. A proposal can be placed in a cluster when you assign its supervisor."
+              action={
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditing(null);
+                    setClusterForm({ name: "", departmentId: "" });
+                    setIsClusterFormOpen(true);
+                  }}
+                  className={buttonClass}
+                >
+                  <Plus size={16} aria-hidden="true" />
+                  Add cluster
+                </button>
+              }
+            />
+            {sortedClusters.length === 0 ? (
+              <EmptyState title="No clusters yet" />
+            ) : (
+              <Card className="!p-0">
+                <ul className="divide-y divide-slate-100">
+                  {sortedClusters.map((item) => (
+                    <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                      <span className="min-w-0 font-medium text-slate-800">{item.name}</span>
+                      <span className="flex shrink-0">
                         <button
                           type="button"
                           title={`Edit ${item.name}`}
                           aria-label={`Edit ${item.name}`}
                           onClick={() => {
                             editable("cluster", item.id);
-                            setClusterForm({
-                              name: item.name,
-                              departmentId: item.departmentId,
-                            });
+                            setClusterForm({ name: item.name, departmentId: item.departmentId });
                             setIsClusterFormOpen(true);
                           }}
-                          className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
+                          className={iconButton}
                         >
                           <Pencil size={17} aria-hidden="true" />
                         </button>
@@ -1713,1144 +2176,599 @@ function AdminManagement({ role }: { role: AdminRole }) {
                           type="button"
                           title={`Delete ${item.name}`}
                           aria-label={`Delete ${item.name}`}
-                          onClick={() =>
-                            void deleteItem(DELETE_CLUSTER, item.id, "Cluster")
-                          }
-                          className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700"
+                          onClick={() => {
+                            if (window.confirm(`Delete cluster "${item.name}"?`))
+                              void deleteItem(DELETE_CLUSTER, item.id, "Cluster");
+                          }}
+                          className={deleteButton}
                         >
                           <Trash2 size={17} aria-hidden="true" />
                         </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+          </section>
+        </div>
+      )}
+
+      {view === "departments" && (
+        <div className="space-y-4">
+          <SectionHeader
+            title="Departments"
+            description="Each department has its own administrator, degree programs, clusters and research timeline."
+            action={
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(null);
+                  setDepartmentForm({ name: "", code: "" });
+                  setIsDepartmentFormOpen(true);
+                }}
+                className={buttonClass}
+              >
+                <Plus size={16} aria-hidden="true" />
+                Create department
+              </button>
+            }
+          />
+          {departments.length === 0 ? (
+            <EmptyState title="No departments yet" />
+          ) : (
+            <Card className="!p-0">
+              <ul className="divide-y divide-slate-100">
+                {departments.map((item) => (
+                  <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                    <span className="min-w-0">
+                      <span className="block font-medium text-slate-800">{item.name}</span>
+                      <span className="block text-xs text-slate-500">
+                        Code {item.code} · created {new Date(item.createdAt).toLocaleDateString()}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0">
+                      <button
+                        type="button"
+                        title={`Edit ${item.name}`}
+                        aria-label={`Edit ${item.name}`}
+                        onClick={() => {
+                          editable("department", item.id);
+                          setDepartmentForm({ name: item.name, code: item.code });
+                          setIsDepartmentFormOpen(true);
+                        }}
+                        className={iconButton}
+                      >
+                        <Pencil size={17} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        title={`Delete ${item.name}`}
+                        aria-label={`Delete ${item.name}`}
+                        onClick={() => {
+                          if (window.confirm(`Delete department "${item.name}"?`))
+                            void deleteItem(DELETE_DEPARTMENT, item.id, "Department");
+                        }}
+                        className={deleteButton}
+                      >
+                        <Trash2 size={17} aria-hidden="true" />
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {isDegreeFormOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900">
+                  {editing?.type === "degree"
+                    ? "Edit degree program"
+                    : "Create degree program"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {editing?.type === "degree"
+                    ? "Update the degree program details."
+                    : "Add a degree program to a department."}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close degree program form"
+                onClick={() => {
+                  setEditing(null);
+                  setDegreeForm({
+                    name: "",
+                    level: "bachelors",
+                    departmentId: "",
+                  });
+                  setIsDegreeFormOpen(false);
+                  setDegreeFormError(null);
+                }}
+                className="flex size-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+            <form className="mt-6 space-y-4" onSubmit={saveDegree}>
+              <label className="block text-sm font-medium text-slate-700">
+                Program name
+                <input
+                  required
+                  value={degreeForm.name}
+                  onChange={(event) =>
+                    setDegreeForm({
+                      ...degreeForm,
+                      name: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-700">
+                Level
+                <select
+                  required
+                  value={degreeForm.level}
+                  onChange={(event) =>
+                    setDegreeForm({
+                      ...degreeForm,
+                      level: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="bachelors">Bachelor's</option>
+                  <option value="masters">Master's</option>
+                  <option value="phd">PhD</option>
+                </select>
+              </label>
+              <label className="block text-sm font-medium text-slate-700">
+                Department
+                <select
+                  required
+                  value={degreeForm.departmentId}
+                  onChange={(event) =>
+                    setDegreeForm({
+                      ...degreeForm,
+                      departmentId: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="">Select department</option>
+                  {departments.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {degreeFormError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {degreeFormError}
+                </p>
+              )}
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditing(null);
+                    setDegreeForm({
+                      name: "",
+                      level: "bachelors",
+                      departmentId: "",
+                    });
+                    setIsDegreeFormOpen(false);
+                    setDegreeFormError(null);
+                  }}
+                  className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  {editing?.type === "degree"
+                    ? "Save changes"
+                    : "Create degree program"}
+                </button>
+              </div>
+            </form>
           </div>
-          {isClusterFormOpen && (
-            /* Cluster forms use a modal so creation stays focused above the table. */
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) {
+        </div>
+      )}
+      {isClusterFormOpen && (
+        /* Cluster forms use a modal so creation stays focused above the table. */
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setEditing(null);
+              setClusterForm({ name: "", departmentId: "" });
+              setIsClusterFormOpen(false);
+              setClusterFormError(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cluster-form-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            {/* The dialog header identifies the current create or edit action. */}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2
+                  id="cluster-form-title"
+                  className="text-xl font-semibold text-slate-900"
+                >
+                  {editing?.type === "cluster"
+                    ? "Edit cluster"
+                    : "Create cluster"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Add a research cluster and assign it to a department.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
                   setEditing(null);
                   setClusterForm({ name: "", departmentId: "" });
                   setIsClusterFormOpen(false);
                   setClusterFormError(null);
-                }
-              }}
-            >
-              <div
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="cluster-form-title"
-                className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
+                }}
+                aria-label="Close cluster form"
+                title="Close cluster form"
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
               >
-                {/* The dialog header identifies the current create or edit action. */}
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2
-                      id="cluster-form-title"
-                      className="text-xl font-semibold text-slate-900"
-                    >
-                      {editing?.type === "cluster"
-                        ? "Edit cluster"
-                        : "Create cluster"}
-                    </h2>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Add a research cluster and assign it to a department.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditing(null);
-                      setClusterForm({ name: "", departmentId: "" });
-                      setIsClusterFormOpen(false);
-                      setClusterFormError(null);
-                    }}
-                    aria-label="Close cluster form"
-                    title="Close cluster form"
-                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-                  >
-                    <X size={18} aria-hidden="true" />
-                  </button>
-                </div>
-
-                {/* The cluster fields collect the values required by the GraphQL mutation. */}
-                <form onSubmit={saveCluster} className="mt-6 grid gap-4">
-                  <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                    Cluster name
-                    <input
-                      required
-                      autoFocus
-                      value={clusterForm.name}
-                      onChange={(event) =>
-                        setClusterForm({
-                          ...clusterForm,
-                          name: event.target.value,
-                        })
-                      }
-                      className={inputClass}
-                    />
-                  </label>
-                  <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                    Department
-                    <select
-                      required
-                      value={clusterForm.departmentId}
-                      onChange={(event) =>
-                        setClusterForm({
-                          ...clusterForm,
-                          departmentId: event.target.value,
-                        })
-                      }
-                      className={inputClass}
-                    >
-                      <option value="">Select department</option>
-                      {departments.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {clusterFormError && (
-                    <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                      {clusterFormError}
-                    </p>
-                  )}
-                  <div className="flex justify-end gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditing(null);
-                        setClusterForm({ name: "", departmentId: "" });
-                        setIsClusterFormOpen(false);
-                        setClusterFormError(null);
-                      }}
-                      className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-                    >
-                      <Plus size={16} aria-hidden="true" />
-                      {editing?.type === "cluster"
-                        ? "Save changes"
-                        : "Create cluster"}
-                    </button>
-                  </div>
-                </form>
-              </div>
+                <X size={18} aria-hidden="true" />
+              </button>
             </div>
-          )}
-        </section>
-      )}
-      {tab === "lifecycle" && (
-        <section className="mt-6">
-          <div
-            className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2"
-            role="tablist"
-            aria-label="Degree level"
-          >
-            <span className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Degree level
-            </span>
-            {DEGREE_LEVELS.map((level) => (
-              <button
-                key={level.value}
-                type="button"
-                role="tab"
-                aria-selected={lifecycleLevel === level.value}
-                onClick={() => {
-                  setLifecycleLevel(level.value);
-                  setError(null);
-                  setMessage(null);
-                  if (lifecycleSection === "defenses")
-                    showDefenses(level.value, defenseKind);
-                }}
-                className={`rounded-lg px-4 py-2 text-sm font-semibold ${lifecycleLevel === level.value ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
-              >
-                {level.label}
-                {awaitingAssignment(level.value) > 0 && (
-                  <span
-                    title={`${awaitingAssignment(level.value)} submitted proposal(s) waiting for a supervisor`}
-                    className={`ml-2 rounded-full px-1.5 text-xs ${lifecycleLevel === level.value ? "bg-white/25 text-white" : "bg-amber-100 text-amber-800"}`}
-                  >
-                    {awaitingAssignment(level.value)}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <div
-            className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
-            role="tablist"
-            aria-label="Research lifecycle"
-          >
-            {(
-              [
-                ["timeline", "Research timeline"],
-                ["proposals", "Proposal assignment"],
-                ["defenses", "Defenses"],
-              ] as [LifecycleSection, string][]
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                role="tab"
-                aria-selected={lifecycleSection === value}
-                onClick={() => {
-                  setLifecycleSection(value);
-                  setError(null);
-                  setMessage(null);
-                  if (value === "defenses")
-                    showDefenses(lifecycleLevel, defenseKind);
-                }}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${lifecycleSection === value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {lifecycleSection === "timeline" && (
-            <>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
-                <div>
-                  <h2 className="text-lg font-medium text-slate-800">
-                    {degreeLevelLabel(lifecycleLevel)} research timeline
-                  </h2>
-                  <p className="text-sm text-slate-500">
-                    Schedule the proposal, progress report and final defense
-                    phases. The students and professors involved are notified
-                    automatically. Phases can be deleted once they've ended.
-                  </p>
-                </div>
+
+            {/* The cluster fields collect the values required by the GraphQL mutation. */}
+            <form onSubmit={saveCluster} className="mt-6 grid gap-4">
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Cluster name
+                <input
+                  required
+                  autoFocus
+                  value={clusterForm.name}
+                  onChange={(event) =>
+                    setClusterForm({
+                      ...clusterForm,
+                      name: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                />
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Department
+                <select
+                  required
+                  value={clusterForm.departmentId}
+                  onChange={(event) =>
+                    setClusterForm({
+                      ...clusterForm,
+                      departmentId: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="">Select department</option>
+                  {departments.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {clusterFormError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {clusterFormError}
+                </p>
+              )}
+              <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => openNewPhaseForm(lifecycleLevel)}
-                  className={buttonClass}
+                  onClick={() => {
+                    setEditing(null);
+                    setClusterForm({ name: "", departmentId: "" });
+                    setIsClusterFormOpen(false);
+                    setClusterFormError(null);
+                  }}
+                  className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
                 >
                   <Plus size={16} aria-hidden="true" />
-                  Add research phase
+                  {editing?.type === "cluster"
+                    ? "Save changes"
+                    : "Create cluster"}
                 </button>
               </div>
-              {levelPhases.length === 0 ? (
-                <div className="mt-4 rounded-xl border border-dashed border-slate-300 p-6 text-center">
-                  <p className="text-sm font-medium text-slate-700">
-                    No {degreeLevelLabel(lifecycleLevel)} research phases
-                    scheduled yet
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Start with a proposal phase, then add a progress report
-                    phase for each review round and a final defense.
-                  </p>
-                </div>
-              ) : (
-                <div className="mt-4">
-                  {[lifecycleLevel].map((levelValue) => (
-                    <div
-                      key={levelValue}
-                      className="rounded-xl border border-slate-200 p-4"
-                    >
-                      <ol className="space-y-4 border-l-2 border-slate-200 pl-5">
-                        {levelPhases.map((phase) => {
-                          const status = phaseStatus(phase);
-                          return (
-                            <li key={phase.id} className="relative">
-                              <span className="absolute -left-[33px] top-0 flex size-6 items-center justify-center rounded-full border-2 border-white bg-blue-600 text-[11px] font-semibold text-white">
-                                {phase.sequenceNumber}
-                              </span>
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <p className="font-medium text-slate-800">
-                                    {phase.label}
-                                  </p>
-                                  <p className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
-                                      {phaseTypeLabel(phase.phaseType)}
-                                    </span>
-                                    <span
-                                      className={`rounded-full px-2 py-0.5 font-medium ${status.className}`}
-                                    >
-                                      {status.label}
-                                    </span>
-                                  </p>
-                                  <p className="mt-1.5 text-xs text-slate-500">
-                                    {phase.phaseType === "defense"
-                                      ? `Defense day: ${phase.defenseDate ? new Date(phase.defenseDate).toLocaleDateString(undefined, { dateStyle: "medium" }) : "not set"}`
-                                      : `${phase.opensAt ? formatPhaseDateTime(phase.opensAt) : "?"} → deadline ${phase.deadlineAt ? formatPhaseDateTime(phase.deadlineAt) : "?"}`}
-                                    {phase.closedAt
-                                      ? ` · closed ${formatPhaseDateTime(phase.closedAt)}`
-                                      : ""}
-                                  </p>
-                                </div>
-                                <span className="flex shrink-0 items-center gap-1">
-                                  <button
-                                    type="button"
-                                    disabled={phaseActionId === phase.id}
-                                    title={
-                                      phase.status === "open"
-                                        ? `Close ${phase.label} so the next phase can start`
-                                        : `Start ${phase.label} — only possible once every earlier phase for this degree level has closed`
-                                    }
-                                    onClick={() =>
-                                      void setPhaseOpen(
-                                        phase,
-                                        phase.status !== "open",
-                                      )
-                                    }
-                                    className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                                      phase.status === "open"
-                                        ? "border-slate-300 text-slate-700 hover:bg-slate-100"
-                                        : "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                                    }`}
-                                  >
-                                    {phase.status === "open"
-                                      ? "Close"
-                                      : phase.status === "closed"
-                                        ? "Reopen"
-                                        : "Open"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={phase.status === "closed"}
-                                    title={
-                                      phase.status === "closed"
-                                        ? "Reopen the phase to change its schedule"
-                                        : `Edit ${phase.label}`
-                                    }
-                                    aria-label={`Edit ${phase.label}`}
-                                    onClick={() => openEditPhaseForm(phase)}
-                                    className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
-                                  >
-                                    <Pencil size={17} aria-hidden="true" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={!phase.hasEnded}
-                                    title={
-                                      phase.hasEnded
-                                        ? `Delete ${phase.label}`
-                                        : phase.phaseType === "defense"
-                                          ? "Can be deleted after the defense day"
-                                          : "Can be deleted after the deadline"
-                                    }
-                                    aria-label={`Delete ${phase.label}`}
-                                    onClick={() => void deletePhase(phase)}
-                                    className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
-                                  >
-                                    <Trash2 size={17} aria-hidden="true" />
-                                  </button>
-                                </span>
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ol>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-          {lifecycleSection === "proposals" && (
-            <>
-              <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-0 py-4">
-                <div>
-                  <h2 className="text-lg font-medium text-slate-800">
-                    {degreeLevelLabel(lifecycleLevel)} proposal assignment
-                  </h2>
-                  <p className="text-sm text-slate-500">
-                    Assign submitted {degreeLevelLabel(lifecycleLevel)}{" "}
-                    proposals to a supervising professor and, optionally, a
-                    cluster.
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  {/* A deleted proposal is only hidden — its row and PDF are still on file. */}
-                  <label className="flex items-center gap-2 text-sm text-slate-600">
-                    <input
-                      type="checkbox"
-                      checked={showDeletedProposals}
-                      onChange={(event) =>
-                        setShowDeletedProposals(event.target.checked)
-                      }
-                      className="size-4 rounded border-slate-300"
-                    />
-                    Show deleted
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAssignmentForm({
-                        proposalId: "",
-                        supervisorId: "",
-                        clusterId: "",
-                      });
-                      setEditingProposalId(null);
-                      setIsProposalFormOpen(true);
-                      setProposalFormError(null);
-                    }}
-                    className={buttonClass}
-                  >
-                    <Plus size={16} aria-hidden="true" />
-                    Assign proposal
-                  </button>
-                </div>
-              </div>
-              {isProposalFormOpen && (
-                /* Assignment fields keep the selected proposal and reviewers together in one dialog. */
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
-                  <div
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby="proposal-form-title"
-                    className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <h2
-                          id="proposal-form-title"
-                          className="text-xl font-semibold text-slate-900"
-                        >
-                          {editingProposalId
-                            ? "Edit proposal assignment"
-                            : "Assign student proposal"}
-                        </h2>
-                        <p className="mt-1 text-sm text-slate-500">
-                          Choose a professor, optionally place the proposal in a
-                          cluster, and manage its group members.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        aria-label="Close proposal assignment form"
-                        title="Close proposal assignment form"
-                        onClick={() => {
-                          setIsProposalFormOpen(false);
-                          setGroupStudentId("");
-                          setProposalFormError(null);
-                        }}
-                        className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-                      >
-                        <X size={18} aria-hidden="true" />
-                      </button>
-                    </div>
-                    <form onSubmit={assignProposal} className="mt-6 grid gap-4">
-                      <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                        Student proposal
-                        <select
-                          required
-                          value={assignmentForm.proposalId}
-                          onChange={(event) => {
-                            setAssignmentForm({
-                              ...assignmentForm,
-                              proposalId: event.target.value,
-                            });
-                            setGroupStudentId("");
-                          }}
-                          className={inputClass}
-                        >
-                          <option value="">Select student proposal</option>
-                          {levelProposals
-                            .filter(
-                              (proposal) =>
-                                proposal.submittedBy &&
-                                students.some(
-                                  (student) =>
-                                    student.id === proposal.submittedBy,
-                                ),
-                            )
-                            .map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.title} ({item.status})
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                        Professor
-                        <select
-                          required
-                          value={assignmentForm.supervisorId}
-                          onChange={(event) =>
-                            setAssignmentForm({
-                              ...assignmentForm,
-                              supervisorId: event.target.value,
-                            })
-                          }
-                          className={inputClass}
-                        >
-                          <option value="">Select professor</option>
-                          {professors.map((item) => {
-                            const capacity = professorCapacity(item.id);
-                            const load = professorLoad(
-                              item.id,
-                              selectedProposal?.id ?? undefined,
-                            );
-                            const blocked =
-                              item.id === assignmentForm.supervisorId
-                                ? null
-                                : supervisionBlock(item.id, selectedProposal);
-                            return (
-                              <option
-                                key={item.id}
-                                value={item.id}
-                                disabled={Boolean(blocked)}
-                              >
-                                {item.name} ({load}
-                                {capacity !== null ? `/${capacity}` : ""}{" "}
-                                students){blocked ? ` — ${blocked}` : ""}
-                              </option>
-                            );
-                          })}
-                        </select>
-                        {selectedSupervisorBlock && (
-                          <span className="text-xs font-normal text-red-600">
-                            {selectedSupervisorBlock}
-                          </span>
-                        )}
-                        {selectedProposalLevel && (
-                          <span className="text-xs font-normal text-slate-500">
-                            {selectedProposalLevel === "bachelors"
-                              ? "A professor can supervise one Bachelor's group at a time"
-                              : `A professor can supervise one ${degreeLevelLabel(selectedProposalLevel)} project at a time`}
-                            {`, and ${SUPERVISION_LIMITS.totalStudents} students overall.`}
-                          </span>
-                        )}
-                      </label>
-                      <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                        Cluster
-                        <select
-                          value={assignmentForm.clusterId}
-                          onChange={(event) =>
-                            setAssignmentForm({
-                              ...assignmentForm,
-                              clusterId: event.target.value,
-                            })
-                          }
-                          className={inputClass}
-                        >
-                          <option value="">Select cluster (optional)</option>
-                          {sortedClusters.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {departmentName(item.departmentId)}: {item.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      {selectedProposal &&
-                        selectedProposal.degreeLevel !== "bachelors" && (
-                          <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
-                            {degreeLevelLabel(
-                              selectedProposal.degreeLevel ?? "",
-                            )}{" "}
-                            proposals are individual work, so there are no group
-                            members to manage.
-                          </p>
-                        )}
-                      {selectedProposal &&
-                        selectedProposal.degreeLevel === "bachelors" && (
-                          <div className="grid gap-1.5 text-sm font-medium text-slate-700">
-                            Group members{" "}
-                            <span className="font-normal text-slate-500">
-                              ({selectedProposal.groupMembers.length + 1}/3
-                              students)
-                            </span>
-                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm font-normal text-slate-700">
-                              <p className="font-medium">
-                                {selectedProposal.submittedByName ??
-                                  "Proposal owner"}{" "}
-                                (owner)
-                              </p>
-                              {selectedProposal.groupMembers.map((member) => (
-                                <div
-                                  key={member.id}
-                                  className="mt-2 flex items-center justify-between"
-                                >
-                                  <span>{member.name}</span>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      void adjustProposalMember(
-                                        selectedProposal,
-                                        member.id,
-                                        false,
-                                      )
-                                    }
-                                    className="text-sm text-red-600 hover:text-red-700"
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="mt-1 flex gap-2 font-normal">
-                              <select
-                                value={groupStudentId}
-                                onChange={(event) =>
-                                  setGroupStudentId(event.target.value)
-                                }
-                                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                              >
-                                <option value="">
-                                  Select department student
-                                </option>
-                                {students
-                                  .filter(
-                                    (student) =>
-                                      student.id !==
-                                        selectedProposal.submittedBy &&
-                                      !selectedProposal.groupMembers.some(
-                                        (member) => member.id === student.id,
-                                      ) &&
-                                      !committedElsewhereIds.has(student.id),
-                                  )
-                                  .map((student) => (
-                                    <option key={student.id} value={student.id}>
-                                      {student.name}
-                                    </option>
-                                  ))}
-                              </select>
-                              <button
-                                type="button"
-                                disabled={
-                                  !groupStudentId ||
-                                  selectedProposal.groupMembers.length >= 2
-                                }
-                                onClick={() =>
-                                  void adjustProposalMember(
-                                    selectedProposal,
-                                    groupStudentId,
-                                    true,
-                                  )
-                                }
-                                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-                              >
-                                Add
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      {proposalFormError && (
-                        <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                          {proposalFormError}
-                        </p>
-                      )}
-                      <div className="flex justify-end gap-3 pt-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingProposalId(null);
-                            setIsProposalFormOpen(false);
-                            setGroupStudentId("");
-                            setProposalFormError(null);
-                          }}
-                          className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="submit"
-                          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-                        >
-                          <Plus size={16} aria-hidden="true" />
-                          Assign proposal
-                        </button>
-                      </div>
-                    </form>
-                  </div>
-                </div>
-              )}
-              <div className="mt-6 overflow-x-auto">
-                <table className="w-full min-w-[760px] border-collapse text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                      <th className="px-4 py-3">Proposal</th>
-                      <th className="px-4 py-3">Student</th>
-                      <th className="px-4 py-3">Group</th>
-                      <th className="px-4 py-3">Assigned professor</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {levelProposals.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={6}
-                          className="px-4 py-8 text-center text-slate-500"
-                        >
-                          No {degreeLevelLabel(lifecycleLevel)} proposals found.
-                        </td>
-                      </tr>
-                    ) : (
-                      levelProposals.map((proposal) => (
-                        <tr
-                          key={proposal.id}
-                          className={`border-b border-slate-100 ${assignmentTone(proposal).row}`}
-                        >
-                          <td className="px-4 py-3 font-medium text-slate-800">
-                            {proposal.title}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">
-                            {proposal.submittedByName ?? "Unknown student"}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">
-                            {proposal.degreeLevel === "bachelors" ? (
-                              <>
-                                {proposal.groupMembers.length + 1}/3
-                                {proposal.groupMembers.length > 0 &&
-                                  ` · ${proposal.groupMembers.map((member) => member.name).join(", ")}`}
-                              </>
-                            ) : (
-                              "Individual"
-                            )}
-                          </td>
-                          <td
-                            className={`px-4 py-3 font-medium ${assignmentTone(proposal).cell}`}
-                          >
-                            {proposal.supervisorName ?? "Unassigned"}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">
-                            {/* ring keeps the pill readable as a pill against the row's green/red assignment tint */}
-                            <span
-                              className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ring-inset ring-black/5 ${statusStyles[proposal.status] ?? "bg-slate-100 text-slate-600"}`}
-                            >
-                              {formatStatus(proposal.status)}
-                            </span>
-                            {proposal.deletedAt && (
-                              <span className="ml-1 inline-block rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600">
-                                Deleted
-                              </span>
-                            )}
-                            {proposal.reviewComment && (
-                              <p className="mt-1 max-w-[16rem] text-xs text-slate-500">
-                                {proposal.reviewedByName
-                                  ? `${proposal.reviewedByName}: `
-                                  : ""}
-                                "{proposal.reviewComment}"
-                              </p>
-                            )}
-                            {proposal.deletedAt && (
-                              <p className="mt-1 max-w-[16rem] text-xs text-slate-400">
-                                Deleted by{" "}
-                                {proposal.deletedByName ?? "an admin"} on{" "}
-                                {new Date(
-                                  proposal.deletedAt,
-                                ).toLocaleDateString()}
-                              </p>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            {proposal.originalFilename && (
-                              <>
-                                <button
-                                  type="button"
-                                  title="View proposal document"
-                                  aria-label={`View document for ${proposal.title}`}
-                                  onClick={() =>
-                                    void viewProposalFile(proposal.id).catch(
-                                      (viewError: unknown) =>
-                                        setError(
-                                          viewError instanceof Error
-                                            ? viewError.message
-                                            : "Unable to open the document.",
-                                        ),
-                                    )
-                                  }
-                                  className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                                >
-                                  <Eye size={17} aria-hidden="true" />
-                                </button>
-                                <button
-                                  type="button"
-                                  title="Download proposal document"
-                                  aria-label={`Download document for ${proposal.title}`}
-                                  onClick={() =>
-                                    void downloadProposalFile(
-                                      proposal.id,
-                                      proposal.originalFilename ??
-                                        "proposal.pdf",
-                                    ).catch((downloadError: unknown) =>
-                                      setError(
-                                        downloadError instanceof Error
-                                          ? downloadError.message
-                                          : "Unable to download the document.",
-                                      ),
-                                    )
-                                  }
-                                  className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                                >
-                                  <Download size={17} aria-hidden="true" />
-                                </button>
-                              </>
-                            )}
-                            {!proposal.deletedAt && (
-                              <button
-                                type="button"
-                                title={`Edit assignment for ${proposal.title}`}
-                                aria-label={`Edit assignment for ${proposal.title}`}
-                                onClick={() => {
-                                  setEditingProposalId(proposal.id);
-                                  setAssignmentForm({
-                                    proposalId: proposal.id,
-                                    supervisorId: proposal.supervisorId ?? "",
-                                    clusterId: proposal.clusterId ?? "",
-                                  });
-                                  setIsProposalFormOpen(true);
-                                  setProposalFormError(null);
-                                }}
-                                className="mr-1 inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                              >
-                                <Pencil size={17} aria-hidden="true" />
-                              </button>
-                            )}
-                            {proposal.status === "rejected" &&
-                              !proposal.deletedAt && (
-                                <button
-                                  type="button"
-                                  title={`Delete rejected proposal "${proposal.title}"`}
-                                  aria-label={`Delete rejected proposal "${proposal.title}"`}
-                                  onClick={() => {
-                                    if (
-                                      window.confirm(
-                                        `Delete rejected proposal "${proposal.title}"? It will remain visible in history for the student and professor.`,
-                                      )
-                                    ) {
-                                      void deleteItem(
-                                        DELETE_PROPOSAL_AS_ADMIN,
-                                        proposal.id,
-                                        "Proposal",
-                                      );
-                                    }
-                                  }}
-                                  className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-50 hover:text-red-700"
-                                >
-                                  <Trash2 size={17} aria-hidden="true" />
-                                </button>
-                              )}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-          {lifecycleSection === "defenses" && (
-            <>
-              <div className="border-b border-slate-200 px-0 py-4">
-                <h2 className="text-lg font-medium text-slate-800">
-                  {degreeLevelLabel(lifecycleLevel)} defenses
+            </form>
+          </div>
+        </div>
+      )}
+      {isProposalFormOpen && (
+        /* Assignment fields keep the selected proposal and reviewers together in one dialog. */
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="proposal-form-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2
+                  id="proposal-form-title"
+                  className="text-xl font-semibold text-slate-900"
+                >
+                  {editingProposalId
+                    ? "Edit proposal assignment"
+                    : "Assign student proposal"}
                 </h2>
-                <p className="text-sm text-slate-500">
-                  Every proposal, progress report and approved final report can
-                  be defended. Plan when and where, choose the panel, and the
-                  students, supervisor and panel are notified.
+                <p className="mt-1 text-sm text-slate-500">
+                  Choose a professor, optionally place the proposal in a
+                  cluster, and manage its group members.
                 </p>
               </div>
-              <div
-                className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
-                role="tablist"
-                aria-label="Report type"
+              <button
+                type="button"
+                aria-label="Close proposal assignment form"
+                title="Close proposal assignment form"
+                onClick={() => {
+                  setIsProposalFormOpen(false);
+                  setGroupStudentId("");
+                  setProposalFormError(null);
+                }}
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900"
               >
-                {DEFENSE_KINDS.map((kind) => (
-                  <button
-                    key={kind.value}
-                    type="button"
-                    role="tab"
-                    aria-selected={defenseKind === kind.value}
-                    onClick={() => showDefenses(lifecycleLevel, kind.value)}
-                    className={`rounded-lg px-3 py-1.5 text-sm font-medium ${defenseKind === kind.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
-                  >
-                    {kind.label}
-                    <span className="ml-1 text-xs text-slate-400">
-                      {
-                        levelDefenses.filter(
-                          (defense) => defense.kind === kind.value,
-                        ).length
-                      }
-                    </span>
-                  </button>
-                ))}
-              </div>
-              {/* Progress reports run in rounds, so their defenses divide into the same
-                  phases. A kind with a single round has nothing to divide. */}
-              {phaseChoices.length > 1 && (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                    Phase
-                  </span>
-                  <div
-                    className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1"
-                    role="tablist"
-                    aria-label="Research phase"
-                  >
-                    {[
-                      {
-                        id: null as string | null,
-                        tab: "All phases",
-                        full: "All phases",
-                      },
-                      ...phaseChoices,
-                    ].map((choice) => {
-                      const count = allKindDefenses.filter(
-                        (defense) =>
-                          choice.id === null ||
-                          (choice.id === NO_PHASE
-                            ? !defense.phaseId
-                            : defense.phaseId === choice.id),
-                      ).length;
-                      return (
-                        <button
-                          key={choice.id ?? "all"}
-                          type="button"
-                          role="tab"
-                          title={choice.full}
-                          aria-selected={defensePhaseId === choice.id}
-                          onClick={() => setDefensePhaseId(choice.id)}
-                          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${defensePhaseId === choice.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
-                        >
-                          {choice.tab}
-                          <span className="ml-1 text-xs text-slate-400">
-                            {count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              {defenseError && !planTarget && (
-                <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                  {defenseError}
-                </p>
-              )}
-
-              <h3 className="mt-6 text-sm font-semibold text-slate-800">
-                {defenseReportLabel(defenseKind)}s to defend
-                {selectedPhaseLabel ? ` · ${selectedPhaseLabel}` : ""}
-              </h3>
-              <div className="mt-2 rounded-xl border border-slate-200">
-                {isLoadingCandidates ? (
-                  <p className="p-4 text-sm text-slate-500">Loading...</p>
-                ) : visibleCandidates.length === 0 ? (
-                  <p className="p-4 text-sm text-slate-500">
-                    {selectedPhaseLabel
-                      ? `No ${degreeLevelLabel(lifecycleLevel)} ${defenseReportLabel(defenseKind).toLowerCase()} belongs to ${selectedPhaseLabel}.`
-                      : defenseKind === "defense"
-                        ? `No ${degreeLevelLabel(lifecycleLevel)} paper has an approved final report yet.`
-                        : `No ${degreeLevelLabel(lifecycleLevel)} ${defenseReportLabel(defenseKind).toLowerCase()} has been submitted yet.`}
-                  </p>
-                ) : (
-                  <ul className="divide-y divide-slate-100">
-                    {visibleCandidates.map((candidate) => (
-                      <li
-                        key={candidate.targetId}
-                        className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm"
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+            <form onSubmit={assignProposal} className="mt-6 grid gap-4">
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Student proposal
+                <select
+                  required
+                  value={assignmentForm.proposalId}
+                  onChange={(event) => {
+                    setAssignmentForm({
+                      ...assignmentForm,
+                      proposalId: event.target.value,
+                    });
+                    setGroupStudentId("");
+                  }}
+                  className={inputClass}
+                >
+                  <option value="">Select student proposal</option>
+                  {levelProposals
+                    .filter(
+                      (proposal) =>
+                        proposal.submittedBy &&
+                        students.some(
+                          (student) =>
+                            student.id === proposal.submittedBy,
+                        ),
+                    )
+                    .map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.title} ({item.status})
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Professor
+                <select
+                  required
+                  value={assignmentForm.supervisorId}
+                  onChange={(event) =>
+                    setAssignmentForm({
+                      ...assignmentForm,
+                      supervisorId: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="">Select professor</option>
+                  {professors.map((item) => {
+                    const capacity = professorCapacity(item.id);
+                    const load = professorLoad(
+                      item.id,
+                      selectedProposal?.id ?? undefined,
+                    );
+                    const blocked =
+                      item.id === assignmentForm.supervisorId
+                        ? null
+                        : supervisionBlock(item.id, selectedProposal);
+                    return (
+                      <option
+                        key={item.id}
+                        value={item.id}
+                        disabled={Boolean(blocked)}
                       >
-                        <div className="min-w-0">
-                          <p className="font-medium text-slate-800">
-                            {candidate.title}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {defenseReportLabel(candidate.kind)}
-                            {candidate.phaseLabel
-                              ? ` · ${candidate.phaseLabel}`
-                              : ""}{" "}
-                            ·{" "}
-                            {candidate.studentNames.join(", ") || "No students"}{" "}
-                            · Supervisor:{" "}
-                            {candidate.supervisorName ?? "not assigned"} ·{" "}
-                            <span className="capitalize">
-                              {formatStatus(candidate.status)}
-                            </span>
-                          </p>
-                          <p
-                            className={`mt-1 text-xs font-medium ${candidate.defense ? "text-slate-600" : "text-slate-400"}`}
-                          >
-                            {candidate.defense
-                              ? `Defense: ${describeDefenseSlot(candidate.defense)} · Panel: ${candidate.defense.panelNames.join(", ") || "none"} · ${DEFENSE_TONE_LABELS[defenseTone(candidate.defense)]}`
-                              : "No defense planned"}
-                          </p>
-                        </div>
-                        {/* The panel decides a heard defense on its own, so there is
-                            nothing for the admin to record — only the wait to show. */}
-                        {candidate.defense?.hasEnded ? (
-                          <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600">
-                            {candidate.defense.currentStatus === "pending"
-                              ? "Awaiting panel verdicts"
-                              : DEFENSE_TONE_LABELS[defenseTone(candidate.defense)]}
-                          </span>
-                        ) : (
+                        {item.name} ({load}
+                        {capacity !== null ? `/${capacity}` : ""}{" "}
+                        students){blocked ? ` — ${blocked}` : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+                {selectedSupervisorBlock && (
+                  <span className="text-xs font-normal text-red-600">
+                    {selectedSupervisorBlock}
+                  </span>
+                )}
+                {selectedProposalLevel && (
+                  <span className="text-xs font-normal text-slate-500">
+                    {selectedProposalLevel === "bachelors"
+                      ? "A professor can supervise one Bachelor's group at a time"
+                      : `A professor can supervise one ${degreeLevelLabel(selectedProposalLevel)} project at a time`}
+                    {`, and ${SUPERVISION_LIMITS.totalStudents} students overall.`}
+                  </span>
+                )}
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Cluster
+                <select
+                  value={assignmentForm.clusterId}
+                  onChange={(event) =>
+                    setAssignmentForm({
+                      ...assignmentForm,
+                      clusterId: event.target.value,
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="">Select cluster (optional)</option>
+                  {sortedClusters.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {departmentName(item.departmentId)}: {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedProposal &&
+                selectedProposal.degreeLevel !== "bachelors" && (
+                  <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+                    {degreeLevelLabel(
+                      selectedProposal.degreeLevel ?? "",
+                    )}{" "}
+                    proposals are individual work, so there are no group
+                    members to manage.
+                  </p>
+                )}
+              {selectedProposal &&
+                selectedProposal.degreeLevel === "bachelors" && (
+                  <div className="grid gap-1.5 text-sm font-medium text-slate-700">
+                    Group members{" "}
+                    <span className="font-normal text-slate-500">
+                      ({selectedProposal.groupMembers.length + 1}/3
+                      students)
+                    </span>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm font-normal text-slate-700">
+                      <p className="font-medium">
+                        {selectedProposal.submittedByName ??
+                          "Proposal owner"}{" "}
+                        (owner)
+                      </p>
+                      {selectedProposal.groupMembers.map((member) => (
+                        <div
+                          key={member.id}
+                          className="mt-2 flex items-center justify-between"
+                        >
+                          <span>{member.name}</span>
                           <button
                             type="button"
                             onClick={() =>
-                              openPlanForm({
-                                kind: candidate.kind,
-                                targetId: candidate.targetId,
-                                title: candidate.title,
-                                phaseId: candidate.phaseId,
-                                suggestedDate: candidate.suggestedDate,
-                                supervisorName: candidate.supervisorName,
-                                existing: candidate.defense,
-                              })
+                              void adjustProposalMember(
+                                selectedProposal,
+                                member.id,
+                                false,
+                              )
                             }
-                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                            className="text-sm text-red-600 hover:text-red-700"
                           >
-                            {candidate.defense ? "Reschedule" : "Plan defense"}
+                            Remove
                           </button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-1 flex gap-2 font-normal">
+                      <select
+                        value={groupStudentId}
+                        onChange={(event) =>
+                          setGroupStudentId(event.target.value)
+                        }
+                        className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      >
+                        <option value="">
+                          Select department student
+                        </option>
+                        {students
+                          .filter(
+                            (student) =>
+                              student.id !==
+                                selectedProposal.submittedBy &&
+                              !selectedProposal.groupMembers.some(
+                                (member) => member.id === student.id,
+                              ) &&
+                              !committedElsewhereIds.has(student.id),
+                          )
+                          .map((student) => (
+                            <option key={student.id} value={student.id}>
+                              {student.name}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={
+                          !groupStudentId ||
+                          selectedProposal.groupMembers.length >= 2
+                        }
+                        onClick={() =>
+                          void adjustProposalMember(
+                            selectedProposal,
+                            groupStudentId,
+                            true,
+                          )
+                        }
+                        className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
                 )}
+              {proposalFormError && (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {proposalFormError}
+                </p>
+              )}
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingProposalId(null);
+                    setIsProposalFormOpen(false);
+                    setGroupStudentId("");
+                    setProposalFormError(null);
+                  }}
+                  className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  <Plus size={16} aria-hidden="true" />
+                  Assign proposal
+                </button>
               </div>
-
-              <h3 className="mt-8 text-sm font-semibold text-slate-800">
-                Planned {degreeLevelLabel(lifecycleLevel)}{" "}
-                {defenseKindLabel(defenseKind).toLowerCase()}s
-                {selectedPhaseLabel ? ` · ${selectedPhaseLabel}` : ""}
-              </h3>
-              <div className="overflow-x-auto pt-2">
-                <table className="w-full min-w-[980px] border-collapse text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                      <th className="px-4 py-3">Report</th>
-                      <th className="px-4 py-3">Students</th>
-                      <th className="px-4 py-3">Date</th>
-                      <th className="px-4 py-3">Time</th>
-                      <th className="px-4 py-3">Location</th>
-                      <th className="px-4 py-3">Panel</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {kindDefenses.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={8}
-                          className="px-4 py-8 text-center text-slate-500"
-                        >
-                          {selectedPhaseLabel
-                            ? `Nothing planned for ${selectedPhaseLabel} yet.`
-                            : "Nothing planned yet."}
-                        </td>
-                      </tr>
-                    ) : (
-                      kindDefenses.map((defense) => {
-                        const targetId =
-                          defense.proposalId ??
-                          defense.progressReportId ??
-                          defense.paperId;
-                        const tone = defenseTone(defense);
-                        return (
-                          <tr
-                            key={defense.id}
-                            className={`border-b border-slate-100 align-top ${DEFENSE_TONE_STYLES[tone].row}`}
-                          >
-                            <td className="px-4 py-3">
-                              <p className="font-medium text-slate-800">
-                                {defense.paperTitle ?? "Untitled research"}
-                              </p>
-                              <p className="text-xs text-slate-500">
-                                {defenseReportLabel(defense.kind)}
-                                {defense.phaseLabel
-                                  ? ` · ${defense.phaseLabel}`
-                                  : ""}
-                              </p>
-                            </td>
-                            <td className="px-4 py-3 text-slate-600">
-                              {defense.studentNames.join(", ") || "—"}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-slate-800">
-                              {formatDefenseDate(defense.defenseDate)}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-slate-800">
-                              {defense.scheduledTime?.slice(0, 5) ?? "—"}
-                            </td>
-                            <td className="px-4 py-3 text-slate-600">
-                              {defense.location ?? "Not set"}
-                            </td>
-                            <td className="px-4 py-3 text-slate-600">
-                              {defense.panelNames.join(", ") || "No panel yet"}
-                            </td>
-                            <td className="px-4 py-3">
-                              <span
-                                className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${DEFENSE_TONE_STYLES[tone].badge}`}
-                              >
-                                {DEFENSE_TONE_LABELS[tone]}
-                              </span>
-                              {defense.kind === "defense" &&
-                                defense.currentStatus === "pending" && (
-                                  <p className="mt-1 text-xs text-slate-500">
-                                    {defense.submissionConfirmed
-                                      ? "Thesis submitted"
-                                      : "Awaiting thesis"}
-                                  </p>
-                                )}
-                              {defense.requiresRedefense && (
-                                <p className="mt-1 text-xs font-medium text-amber-800">
-                                  Has to defend again
-                                </p>
-                              )}
-                              {defense.outcomeComments && (
-                                <p className="mt-1 max-w-[16rem] whitespace-pre-line text-xs text-slate-600">
-                                  "{defense.outcomeComments}"
-                                </p>
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <div className="inline-flex flex-wrap justify-end gap-2">
-                                {targetId &&
-                                  defense.currentStatus === "pending" &&
-                                  !defense.hasEnded && (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        openPlanForm({
-                                          kind: defense.kind,
-                                          targetId,
-                                          title:
-                                            defense.paperTitle ?? "this report",
-                                          phaseId: defense.phaseId,
-                                          suggestedDate: null,
-                                          supervisorName:
-                                            defense.supervisorName,
-                                          existing: defense,
-                                        })
-                                      }
-                                      className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
-                                    >
-                                      Edit
-                                    </button>
-                                  )}
-                                {/* The panel's own majority settles a heard defense. */}
-                                {defense.hasEnded && defense.currentStatus === "pending" && (
-                                  <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600">
-                                    Awaiting panel verdicts
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </section>
+            </form>
+          </div>
+        </div>
       )}
       {planTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
@@ -3293,7 +3211,7 @@ function AdminManagement({ role }: { role: AdminRole }) {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 export default AdminManagement;
