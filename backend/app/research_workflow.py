@@ -172,6 +172,66 @@ def validate_phase_can_open(db, degree_level, department_id, sequence_number, *,
             )
 
 
+def phase_addition_rules(db, degree_level, department_id, batch_id) -> dict:
+    """Which kinds of phase may be added next to one level's timeline, and why not.
+
+    Returns {PhaseType: reason}, with None meaning "allowed". The shape it keeps is
+    one proposal phase first, then at least one progress report round (as many as
+    the admin likes), then one final defense as the last step. Steps are numbered
+    automatically, so appending in this order is what keeps the timeline in order.
+
+    What already happened counts even if the admin later deleted that phase from
+    the timeline (only ended phases can be deleted): a batch whose proposal round
+    ran and was cleared away still had its proposal round.
+    """
+    phases = db.query(models.ResearchPhase).filter(
+        models.ResearchPhase.degree_level == degree_level,
+        models.ResearchPhase.batch_id == batch_id,
+        or_(
+            models.ResearchPhase.department_id == department_id,
+            models.ResearchPhase.department_id.is_(None),
+        ),
+    ).all()
+    live = [phase for phase in phases if phase.deleted_at is None]
+
+    def has(kind, among):
+        return any(phase.phase_type == kind for phase in among)
+
+    proposal, progress, defense = (
+        models.PhaseType.proposal, models.PhaseType.progress_report, models.PhaseType.defense,
+    )
+    rules = {}
+    if has(proposal, phases):
+        rules[proposal] = "This degree level already has its proposal phase"
+    elif live:
+        rules[proposal] = "The proposal phase has to be the first step of the timeline"
+    else:
+        rules[proposal] = None
+
+    if not has(proposal, phases):
+        rules[progress] = "Add the proposal phase first — progress reports come after it"
+    elif has(defense, live):
+        rules[progress] = "The final defense is the last step, so no more progress rounds can follow it"
+    else:
+        rules[progress] = None
+
+    if not has(proposal, phases):
+        rules[defense] = "Add the proposal phase first"
+    elif not has(progress, phases):
+        rules[defense] = "Add at least one progress report round before the final defense"
+    elif has(defense, live):
+        rules[defense] = "This degree level already has its final defense"
+    else:
+        rules[defense] = None
+    return rules
+
+
+def next_sequence_number(db, degree_level, department_id, batch_id) -> int:
+    """The step after the last phase on this level's timeline."""
+    existing = level_phases(db, degree_level, department_id, batch_id)
+    return max((phase.sequence_number for phase in existing), default=0) + 1
+
+
 def current_open_phase(db, user, phase_type: models.PhaseType) -> models.ResearchPhase:
     """The earliest open phase of a type for a student's own program.
 

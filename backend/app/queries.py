@@ -19,6 +19,8 @@ from .utils import (
 )
 from .research_workflow import (
     active_phases,
+    next_sequence_number,
+    phase_addition_rules,
     current_open_phase,
     is_phase_open,
     newest_phase_for_level,
@@ -744,6 +746,34 @@ class UserQuery:
         db = info.context["db"]
         batch = active_batch(db)
         return batch_schema(db, batch) if batch else None
+
+    @strawberry.field(permission_classes=[IsDepartmentAdmin])
+    def research_phase_options(self, info: strawberry.Info, degree_level: str) -> list[schemas.PhaseTypeOptionSchema]:
+        """Which phase types the admin may add next to one level's timeline in the
+        running batch, and why the others are refused — the same rule
+        create_research_phase enforces, so the form never offers what the server
+        would turn down."""
+        db = info.context["db"]
+        current_user = info.context["current_user"]
+        try:
+            level = models.DegreeLevel(degree_level.strip().lower())
+        except ValueError:
+            raise Exception("Degree level must be bachelors, masters, or phd")
+        batch = active_batch(db)
+        if batch is None:
+            reason = "No batch is running — start one before scheduling phases"
+            return [
+                schemas.PhaseTypeOptionSchema(phase_type=kind.value, allowed=False, reason=reason)
+                for kind in models.PhaseType
+            ]
+        rules = phase_addition_rules(db, level, current_user.department_id, batch.id)
+        step = next_sequence_number(db, level, current_user.department_id, batch.id)
+        return [
+            schemas.PhaseTypeOptionSchema(
+                phase_type=kind.value, allowed=rules[kind] is None, reason=rules[kind], sequence_number=step,
+            )
+            for kind in (models.PhaseType.proposal, models.PhaseType.progress_report, models.PhaseType.defense)
+        ]
 
     @strawberry.field(permission_classes=[IsAuthenticated])
     def research_phases(self, info: strawberry.Info, batch_id: Optional[uuid.UUID] = None) -> list[schemas.ResearchPhaseSchema]:
