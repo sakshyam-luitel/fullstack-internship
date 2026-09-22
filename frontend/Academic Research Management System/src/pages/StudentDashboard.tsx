@@ -72,9 +72,13 @@ interface Proposal {
   fileSizeBytes: number | null;
   uploadedAt: string | null;
 }
+// A student in the same Bachelor's program, and whether they can be invited now.
 interface Student {
   id: string;
   name: string;
+  available: boolean;
+  // e.g. "has their own proposal"; null when they can be invited.
+  reason: string | null;
 }
 interface Invite {
   proposalId: string;
@@ -232,6 +236,8 @@ const AVAILABLE_MEMBERS = gql`
     availableGroupMembers {
       id
       name
+      available
+      reason
     }
   }
 `;
@@ -1011,14 +1017,14 @@ function StudentDashboard() {
     }, "Unable to submit the final thesis.");
   };
 
-  const addMember = async () => {
-    if (!groupProposal || !selectedMember) return;
+  const addMember = async (studentId: string = selectedMember) => {
+    if (!groupProposal || !studentId) return;
     setFormError(null);
     try {
       await request(ADD_MEMBER, {
         studentInput: {
           proposalId: groupProposal.id,
-          studentId: selectedMember,
+          studentId,
         },
       });
       setSelectedMember("");
@@ -1097,6 +1103,17 @@ function StudentDashboard() {
   };
 
   const showError = (message: string) => toast.error(message);
+  const memberStatusLabel = (status: string) =>
+    status === "rejected"
+      ? "declined"
+      : status === "pending"
+        ? "invite pending"
+        : status;
+  // A declined invite holds no place, so only the others count toward the group of 3.
+  const activeMemberCount = (proposal: Proposal) =>
+    proposal.groupMembers.filter((member) => member.status !== "rejected").length;
+  const memberOption = (id: string) =>
+    availableMembers.find((member) => member.id === id) ?? null;
   const proposalNotice = phaseNotice(researchPhases, "proposal", "proposal");
   const progressNotice = phaseNotice(
     researchPhases,
@@ -1763,7 +1780,7 @@ function StudentDashboard() {
                           proposal.submittedByName ?? "Owner",
                           ...proposal.groupMembers.map(
                             (member) =>
-                              `${member.name}${member.status !== "accepted" ? ` (${member.status})` : ""}`,
+                              `${member.name}${member.status !== "accepted" ? ` (${memberStatusLabel(member.status)})` : ""}`,
                           ),
                         ].join(", ")}
                       </p>
@@ -2162,8 +2179,13 @@ function StudentDashboard() {
                   className={`${inputClass} h-24`}
                 >
                   {availableMembers.map((member) => (
-                    <option key={member.id} value={member.id}>
+                    <option
+                      key={member.id}
+                      value={member.id}
+                      disabled={!member.available}
+                    >
                       {member.name}
+                      {member.reason ? ` — ${member.reason}` : ""}
                     </option>
                   ))}
                 </select>
@@ -2436,7 +2458,7 @@ function StudentDashboard() {
       {groupProposal && (
         <Modal
           title="Proposal group"
-          subtitle="Invited members must accept before they count toward your group of 2–3."
+          subtitle="Invited members must accept before they count toward your group of 2–3. Someone who declined can be invited again."
           onClose={() => {
             setGroupProposal(null);
             setFormError(null);
@@ -2446,30 +2468,62 @@ function StudentDashboard() {
             <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
               {groupProposal.submittedByName ?? "Owner"} (owner)
             </div>
-            {groupProposal.groupMembers.map((member) => (
-              <div
-                key={member.id}
-                className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm"
-              >
-                <span>
-                  {member.name}{" "}
-                  {member.status !== "accepted" && (
-                    <span className="text-xs text-amber-600">
-                      ({member.status})
+            {groupProposal.groupMembers.map((member) => {
+              const isOwner = groupProposal.submittedBy === currentUserId;
+              const declined = member.status === "rejected";
+              // Asking again needs a free place and a student who isn't tied up elsewhere now.
+              const option = memberOption(member.id);
+              const blockedReason = !declined
+                ? null
+                : activeMemberCount(groupProposal) >= 2
+                  ? "the group is full"
+                  : option && !option.available
+                    ? option.reason
+                    : null;
+              return (
+                <div
+                  key={member.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm"
+                >
+                  <span className="min-w-0">
+                    {member.name}{" "}
+                    {member.status !== "accepted" && (
+                      <span
+                        className={`text-xs ${declined ? "text-red-600" : "text-amber-600"}`}
+                      >
+                        ({memberStatusLabel(member.status)})
+                      </span>
+                    )}
+                    {declined && blockedReason && isOwner && (
+                      <span className="block text-xs text-slate-500">
+                        Can't invite again: {blockedReason}
+                      </span>
+                    )}
+                  </span>
+                  {isOwner && (
+                    <span className="flex shrink-0 items-center gap-3">
+                      {declined && (
+                        <button
+                          type="button"
+                          disabled={Boolean(blockedReason)}
+                          onClick={() => void addMember(member.id)}
+                          className="text-sm font-medium text-blue-700 hover:text-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Invite again
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void removeMember(groupProposal, member.id)}
+                        className="text-sm text-red-600 hover:text-red-700"
+                      >
+                        Remove
+                      </button>
                     </span>
                   )}
-                </span>
-                {groupProposal.submittedBy === currentUserId && (
-                  <button
-                    type="button"
-                    onClick={() => void removeMember(groupProposal, member.id)}
-                    className="text-sm text-red-600 hover:text-red-700"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-            ))}
+                </div>
+              );
+            })}
             {groupProposal.submittedBy === currentUserId && (
               <div className="flex gap-2">
                 <select
@@ -2479,6 +2533,7 @@ function StudentDashboard() {
                 >
                   <option value="">Select a department student</option>
                   {availableMembers
+                    // People already on this group are handled in the list above.
                     .filter(
                       (member) =>
                         !groupProposal.groupMembers.some(
@@ -2486,15 +2541,20 @@ function StudentDashboard() {
                         ),
                     )
                     .map((member) => (
-                      <option key={member.id} value={member.id}>
+                      <option
+                        key={member.id}
+                        value={member.id}
+                        disabled={!member.available}
+                      >
                         {member.name}
+                        {member.reason ? ` — ${member.reason}` : ""}
                       </option>
                     ))}
                 </select>
                 <button
                   type="button"
                   disabled={
-                    !selectedMember || groupProposal.groupMembers.length >= 2
+                    !selectedMember || activeMemberCount(groupProposal) >= 2
                   }
                   onClick={() => void addMember()}
                   className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
