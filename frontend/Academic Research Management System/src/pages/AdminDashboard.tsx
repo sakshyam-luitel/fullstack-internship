@@ -1,4 +1,5 @@
 import {
+  Archive,
   Building2,
   CalendarRange,
   Eye,
@@ -40,6 +41,7 @@ import AdminManagement, {
   type AdminView,
   type DegreeLevel,
 } from "./AdminManagement";
+import BatchManagement from "../components/BatchManagement";
 import { resolveAvatarUrl, uploadAvatarImage } from "../utils/uploadAvatar";
 
 interface User {
@@ -126,7 +128,7 @@ const ADMIN_SECTIONS = [
   "setup",
   "profile",
 ] as const;
-const SUPER_ADMIN_SECTIONS = ["users", "departments", "profile"] as const;
+const SUPER_ADMIN_SECTIONS = ["users", "departments", "batches", "profile"] as const;
 type Section =
   | (typeof ADMIN_SECTIONS)[number]
   | (typeof SUPER_ADMIN_SECTIONS)[number];
@@ -139,6 +141,7 @@ const SECTION_TITLES: Record<Section, string> = {
   setup: "Programs & clusters",
   users: "Users",
   departments: "Departments",
+  batches: "Batches",
   profile: "My profile",
 };
 // Sections drawn by AdminManagement, and which of them work on one degree level.
@@ -742,6 +745,7 @@ function AdminDashboard() {
       ? [
           { key: "users", label: "Users", icon: Users },
           { key: "departments", label: "Departments", icon: Building2 },
+          { key: "batches", label: "Batches", icon: Archive },
         ]
       : [
           { key: "overview", label: "Overview", icon: LayoutDashboard },
@@ -903,6 +907,8 @@ function AdminDashboard() {
             )}
           </div>
         )}
+
+        {section === "batches" && role === "super_admin" && <BatchManagement />}
 
         {section === "users" && role === "super_admin" && (
           <div className="space-y-6">
