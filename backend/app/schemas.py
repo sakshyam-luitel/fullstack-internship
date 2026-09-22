@@ -249,6 +249,15 @@ class DefenseCandidateSchema:
     defense: Optional[DefenseSchema] = None
 
 @strawberry.type
+class GroupMemberOptionSchema:
+    """A student in the same Bachelor's program, and whether they can be invited."""
+    id: uuid.UUID
+    name: str
+    available: bool
+    # Why they can't be invited right now; None when they can.
+    reason: Optional[str] = None
+
+@strawberry.type
 class PhaseTypeOptionSchema:
     """Whether a kind of phase can be added next to a degree level's timeline."""
     phase_type: str  # proposal | progress_report | defense

@@ -250,7 +250,8 @@ def committed_student_ids(db, exclude_proposal_id=None):
     candidates_query = (
         db.query(models.ProposalCandidates.student_id)
         .join(models.Proposals, models.ProposalCandidates.proposal_id == models.Proposals.id)
-        .filter(*active_proposal_filter(models))
+        # A declined invite ties nobody to that group.
+        .filter(*active_proposal_filter(models), models.ProposalCandidates.status != "rejected")
     )
     if exclude_proposal_id is not None:
         submitted_by_query = submitted_by_query.filter(models.Proposals.id != exclude_proposal_id)

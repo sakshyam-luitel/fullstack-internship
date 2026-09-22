@@ -9,9 +9,9 @@ from . import constraints, defenses, models, schemas
 from .permissions import IsAdminOrSuperAdmin, IsAuthenticated, IsDepartmentAdmin, IsProfessor, IsStudent
 from .utils import (
     active_batch,
+    active_proposal_filter,
     batch_schema,
     batch_student_ids,
-    committed_student_ids,
     find_my_paper,
     is_accepted_group_member,
     proposal_group_member_users,
@@ -44,7 +44,8 @@ class UserQuery:
         # A proposal shows up for its owner and for every student added to its group,
         # so the whole team sees the same submitted proposal and its status/review.
         member_proposal_ids = db.query(models.ProposalCandidates.proposal_id).filter(
-            models.ProposalCandidates.student_id == current_user.id
+            models.ProposalCandidates.student_id == current_user.id,
+            models.ProposalCandidates.status != "rejected",
         )
         rows = (
             db.query(models.Proposals, submitted_by_user.name, supervisor_user.name, reviewer_user.name, responder_user.name, deleter_user.name)
@@ -154,7 +155,11 @@ class UserQuery:
                     schemas.ProposalMemberSchema(id=member.id, name=member.name, status=member_status)
                     for member, member_status in db.query(models.User, models.ProposalCandidates.status)
                     .join(models.ProposalCandidates, models.ProposalCandidates.student_id == models.User.id)
-                    .filter(models.ProposalCandidates.proposal_id == proposal.id)
+                    # A declined invite only matters to the group that sent it.
+                    .filter(
+                        models.ProposalCandidates.proposal_id == proposal.id,
+                        models.ProposalCandidates.status != "rejected",
+                    )
                     .order_by(models.User.name)
                     .all()
                 ],
@@ -252,38 +257,66 @@ class UserQuery:
         )
 
     @strawberry.field(permission_classes=[IsStudent])
-    def available_group_members(self, info: strawberry.Info) -> list[schemas.UserSchema]:
-        """Students the signed-in student could invite to a proposal group. Only Bachelor's
+    def available_group_members(self, info: strawberry.Info) -> list[schemas.GroupMemberOptionSchema]:
+        """Students the signed-in student could put in a proposal group, each marked
+        with whether they can be invited now and, if not, why. Only Bachelor's
         proposals are group work, with members from the same Bachelor's program, so a
-        Master's or PhD student gets nobody (see constraints.check_group_composition)."""
+        Master's or PhD student gets nobody (see constraints.check_group_composition).
+
+        Students tied up elsewhere are listed rather than hidden, so the inviter can
+        see why someone they expected isn't selectable. The signed-in student's own
+        active proposal doesn't count against its own members."""
         db = info.context["db"]
         current_user = info.context["current_user"]
         if constraints.get_degree_level(db, current_user) != models.DegreeLevel.bachelors:
             return []
-        committed_ids = committed_student_ids(db)
-        query = db.query(models.User).filter(
+        own_proposal_id = db.query(models.Proposals.id).filter(
+            models.Proposals.submitted_by == current_user.id, *active_proposal_filter(models),
+        ).scalar()
+        others = db.query(models.Proposals).filter(*active_proposal_filter(models))
+        if own_proposal_id is not None:
+            others = others.filter(models.Proposals.id != own_proposal_id)
+        other_ids = [proposal.id for proposal in others.all()]
+        owners = {proposal.submitted_by for proposal in others.all()}
+        member_status = {}
+        if other_ids:
+            for student_id, status in db.query(
+                models.ProposalCandidates.student_id, models.ProposalCandidates.status
+            ).filter(
+                models.ProposalCandidates.proposal_id.in_(other_ids),
+                models.ProposalCandidates.status.in_(("accepted", "pending")),
+            ).all():
+                # "accepted" outranks "pending" when a student has both.
+                if member_status.get(student_id) != "accepted":
+                    member_status[student_id] = status
+
+        def reason_for(user_id):
+            if user_id in owners:
+                return "has their own proposal"
+            if member_status.get(user_id) == "accepted":
+                return "already in another group"
+            if member_status.get(user_id) == "pending":
+                return "has a pending invite to another group"
+            return None
+
+        own_program_id = constraints.get_degree_program_id(db, current_user)
+        users = db.query(models.User).filter(
             models.User.department_id == current_user.department_id,
             models.User.id != current_user.id,
             models.User.role == models.Role.student,
-        )
-        if committed_ids:
-            query = query.filter(~models.User.id.in_(committed_ids))
-        return [
-            schemas.UserSchema(
-                id=user.id,
-                department_id=user.department_id,
-                name=user.name,
-                email=user.email,
-                password="********",
-                role=getattr(user.role, "value", user.role),
-                created_at=user.created_at,
-                avatar_url=user.avatar_url,
-                degree_program_id=user.degree_program_id,
-            )
-            for user in query.order_by(models.User.name).all()
-            if user.degree_program_id == current_user.degree_program_id
-            and constraints.get_degree_level(db, user) == models.DegreeLevel.bachelors
-        ]
+        ).order_by(models.User.name).all()
+        options = []
+        for user in users:
+            if constraints.get_degree_program_id(db, user) != own_program_id:
+                continue
+            if constraints.get_degree_level(db, user) != models.DegreeLevel.bachelors:
+                continue
+            reason = reason_for(user.id)
+            options.append(schemas.GroupMemberOptionSchema(
+                id=user.id, name=user.name, available=reason is None, reason=reason,
+            ))
+        # Invitable students first, so the list reads as "who you can pick".
+        return sorted(options, key=lambda option: not option.available)
 
     @strawberry.field(permission_classes=[IsAdminOrSuperAdmin])
     def departments(self, info: strawberry.Info) -> list[schemas.DepartmentSchema]:
@@ -412,7 +445,11 @@ class UserQuery:
                     schemas.ProposalMemberSchema(id=member.id, name=member.name, status=member_status)
                     for member, member_status in db.query(models.User, models.ProposalCandidates.status)
                     .join(models.ProposalCandidates, models.ProposalCandidates.student_id == models.User.id)
-                    .filter(models.ProposalCandidates.proposal_id == proposal.id)
+                    # A declined invite only matters to the group that sent it.
+                    .filter(
+                        models.ProposalCandidates.proposal_id == proposal.id,
+                        models.ProposalCandidates.status != "rejected",
+                    )
                     .order_by(models.User.name)
                     .all()
                 ],

@@ -919,7 +919,10 @@ class ProposalsMutation:
             schemas.ProposalMemberSchema(id=member.id, name=member.name, status=member_status)
             for member, member_status in db.query(models.User, models.ProposalCandidates.status)
             .join(models.ProposalCandidates, models.ProposalCandidates.student_id == models.User.id)
-            .filter(models.ProposalCandidates.proposal_id == proposal.id)
+            .filter(
+                models.ProposalCandidates.proposal_id == proposal.id,
+                models.ProposalCandidates.status != "rejected",
+            )
             .order_by(models.User.name)
             .all()
         ]
@@ -976,28 +979,35 @@ class ProposalCandidateMutation:
             raise Exception(f"{member.name} has no degree program on file — ask an admin to set one first")
         if member_level != models.DegreeLevel.bachelors:
             raise Exception("Group members must be Bachelor's-level students")
-        if member.degree_program_id != owner.degree_program_id:
+        if constraints.get_degree_program_id(db, member) != constraints.get_degree_program_id(db, owner):
             raise Exception("Group members must belong to the same Bachelor's degree program")
 
-        if db.query(models.ProposalCandidates).filter(
+        existing = db.query(models.ProposalCandidates).filter(
             models.ProposalCandidates.proposal_id == proposal.id,
             models.ProposalCandidates.student_id == member.id,
-        ).first():
+        ).first()
+        if existing and existing.status != "rejected":
             raise Exception("Student is already in this group")
         if member.id in committed_student_ids(db, exclude_proposal_id=proposal.id):
             raise Exception("Student already belongs to another proposal group")
+        # Declined invites don't hold a place in the group.
         member_count = db.query(models.ProposalCandidates).filter(
-            models.ProposalCandidates.proposal_id == proposal.id
+            models.ProposalCandidates.proposal_id == proposal.id,
+            models.ProposalCandidates.status != "rejected",
         ).count()
         if member_count >= constraints.MAX_BACHELOR_GROUP_SIZE - 1:
             raise Exception(f"A proposal can have a maximum of {constraints.MAX_BACHELOR_GROUP_SIZE} students")
-        proposal_candidate = models.ProposalCandidates(
-            proposal_id = student_input.proposal_id,
-            student_id = student_input.student_id,
-            status = "pending",
-        )
-
-        db.add(proposal_candidate)
+        if existing:
+            # Inviting someone who declined asks them again.
+            existing.status = "pending"
+            proposal_candidate = existing
+        else:
+            proposal_candidate = models.ProposalCandidates(
+                proposal_id = student_input.proposal_id,
+                student_id = student_input.student_id,
+                status = "pending",
+            )
+            db.add(proposal_candidate)
         db.commit()
         db.refresh(proposal_candidate)
 
@@ -1058,28 +1068,34 @@ class ProposalCandidateMutation:
             raise Exception(f"{member.name} has no degree program on file — ask an admin to set one first")
         if member_level != models.DegreeLevel.bachelors:
             raise Exception("Group members must be Bachelor's-level students")
-        if member.degree_program_id != owner.degree_program_id:
+        if constraints.get_degree_program_id(db, member) != constraints.get_degree_program_id(db, owner):
             raise Exception("Group members must belong to the same Bachelor's degree program")
 
-        if db.query(models.ProposalCandidates).filter(
+        existing = db.query(models.ProposalCandidates).filter(
             models.ProposalCandidates.proposal_id == proposal.id,
             models.ProposalCandidates.student_id == member.id,
-        ).first():
+        ).first()
+        if existing and existing.status != "rejected":
             raise Exception("Student is already in this group")
         if member.id in committed_student_ids(db, exclude_proposal_id=proposal.id):
             raise Exception("Student already belongs to another proposal group")
         if db.query(models.ProposalCandidates).filter(
-            models.ProposalCandidates.proposal_id == proposal.id
+            models.ProposalCandidates.proposal_id == proposal.id,
+            models.ProposalCandidates.status != "rejected",
         ).count() >= constraints.MAX_BACHELOR_GROUP_SIZE - 1:
             raise Exception(f"A proposal can have a maximum of {constraints.MAX_BACHELOR_GROUP_SIZE} students")
-        candidate = models.ProposalCandidates(
-            proposal_id=proposal.id,
-            student_id=member.id,
-            # Admin placement is authoritative and skips the request/accept flow that
-            # applies when a student invites peers into their own proposal.
-            status="accepted",
-        )
-        db.add(candidate)
+        # Admin placement is authoritative and skips the request/accept flow that
+        # applies when a student invites peers into their own proposal.
+        if existing:
+            existing.status = "accepted"
+            candidate = existing
+        else:
+            candidate = models.ProposalCandidates(
+                proposal_id=proposal.id,
+                student_id=member.id,
+                status="accepted",
+            )
+            db.add(candidate)
         db.commit()
         db.refresh(candidate)
         return schemas.ProposalCandidateSchema(
@@ -1133,12 +1149,9 @@ class ProposalCandidateMutation:
             student_id=candidate.student_id,
             status=response,
         )
-        if response == "rejected":
-            # Deleting (rather than keeping a rejected row) frees the slot immediately
-            # so the proposal owner can edit the group and invite someone else.
-            db.delete(candidate)
-        else:
-            candidate.status = "accepted"
+        # A declined row stays, so the owner sees who declined and can ask again. It
+        # holds no place in the group and doesn't count as belonging to it.
+        candidate.status = response
         db.commit()
         return result
 
