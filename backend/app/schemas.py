@@ -249,6 +249,16 @@ class DefenseCandidateSchema:
     defense: Optional[DefenseSchema] = None
 
 @strawberry.type
+class PhaseTypeOptionSchema:
+    """Whether a kind of phase can be added next to a degree level's timeline."""
+    phase_type: str  # proposal | progress_report | defense
+    allowed: bool
+    # Why not, in words the admin can act on; None when allowed.
+    reason: Optional[str] = None
+    # The step number the phase would get.
+    sequence_number: int = 1
+
+@strawberry.type
 class ResearchPhaseSchema:
     id: uuid.UUID
     phase_type: str

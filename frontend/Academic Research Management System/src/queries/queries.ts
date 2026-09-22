@@ -126,3 +126,10 @@ export const CURRENT_BATCH_QUERY = gql`
     currentBatch { ${BATCH_FIELDS} }
   }
 `;
+
+// Which phase types the department admin may add next to one level's timeline, and why not.
+export const RESEARCH_PHASE_OPTIONS_QUERY = gql`
+  query ResearchPhaseOptions($degreeLevel: String!) {
+    researchPhaseOptions(degreeLevel: $degreeLevel) { phaseType allowed reason sequenceNumber }
+  }
+`;

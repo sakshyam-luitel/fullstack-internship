@@ -13,6 +13,7 @@ import {
 import { gql } from "@apollo/client";
 import { print } from "graphql";
 import {
+  BlockedReason,
   Card,
   DocumentActions,
   EmptyState,
@@ -33,6 +34,7 @@ import {
   CURRENT_BATCH_QUERY,
   DEFENSE_CANDIDATES_QUERY,
   PROFILES_QUERY,
+  RESEARCH_PHASE_OPTIONS_QUERY,
   RESEARCH_PHASES_QUERY,
 } from "../queries/queries";
 import {
@@ -163,6 +165,13 @@ interface ResearchPhase {
   // pending | open | closed — set by the admin, never by the deadline passing.
   status: string;
   closedAt: string | null;
+}
+// Whether a phase type can be added next to a level's timeline (researchPhaseOptions).
+interface PhaseOption {
+  phaseType: string;
+  allowed: boolean;
+  reason: string | null;
+  sequenceNumber: number;
 }
 interface GraphQLResult<T> {
   data?: T;
@@ -483,7 +492,6 @@ const emptyPhaseForm = {
   phaseType: "proposal",
   degreeLevel: "bachelors",
   label: "",
-  sequenceNumber: "1",
   opensAt: "",
   deadlineAt: "",
   defenseDate: "",
@@ -596,6 +604,9 @@ function AdminManagement({
   const [isLoaded, setIsLoaded] = useState(false);
   const [areCandidatesLoaded, setAreCandidatesLoaded] = useState(false);
   const [currentBatch, setCurrentBatch] = useState<Batch | null>(null);
+  // The timeline runs proposal -> progress rounds -> final defense; the server says
+  // which of those each level may add next, so the form offers nothing it would refuse.
+  const [phaseOptions, setPhaseOptions] = useState<Record<string, PhaseOption[]>>({});
   // Every level and kind at once, for the overview and the sidebar counts.
   const [allCandidates, setAllCandidates] = useState<DefenseCandidate[]>([]);
   // Per-form errors so a failed submit shows inside the open modal, not on the page behind it.
@@ -703,7 +714,6 @@ function AdminManagement({
     } catch (requestError) {
       setLoadError(errorMessage(requestError, "Unable to load management data."));
     }
-    setIsLoaded(true);
     // The batch is only shown for context, so a failure here doesn't block the page.
     try {
       const batchData = await request<{ currentBatch: Batch | null }>(
@@ -713,6 +723,24 @@ function AdminManagement({
     } catch {
       setCurrentBatch(null);
     }
+    if (role === "admin") {
+      try {
+        const results = await Promise.all(
+          DEGREE_LEVELS.map((item) =>
+            request<{ researchPhaseOptions: PhaseOption[] }>(
+              RESEARCH_PHASE_OPTIONS_QUERY,
+              { degreeLevel: item.value },
+            ).then((result) => [item.value, result.researchPhaseOptions] as const),
+          ),
+        );
+        setPhaseOptions(Object.fromEntries(results));
+      } catch {
+        // Without them the form still works; the server refuses a phase out of order.
+        setPhaseOptions({});
+      }
+    }
+    // Only now is every list the page shows in place.
+    setIsLoaded(true);
   };
 
   // Every report that could be defended, across all levels and kinds.
@@ -1146,16 +1174,11 @@ function AdminManagement({
     }
   };
 
-  // Next free step number for the level, plus a title like "Progress report 3".
+  // A title like "Progress report 3" for the next phase of this type.
   const suggestPhase = (phaseType: string, degreeLevel: string) => {
     const levelPhases = researchPhases.filter(
       (phase) => phase.degreeLevel === degreeLevel,
     );
-    const nextSequence =
-      levelPhases.reduce(
-        (highest, phase) => Math.max(highest, phase.sequenceNumber),
-        0,
-      ) + 1;
     const round =
       levelPhases.filter((phase) => phase.phaseType === phaseType).length + 1;
     const baseLabel =
@@ -1166,15 +1189,17 @@ function AdminManagement({
       phaseType === "progress_report" || round > 1
         ? `${baseLabel} ${round}`
         : baseLabel;
-    return { sequenceNumber: String(nextSequence), label };
+    return { label };
   };
+  const optionsFor = (degreeLevel: string) => phaseOptions[degreeLevel] ?? [];
+  const optionFor = (degreeLevel: string, phaseType: string) =>
+    optionsFor(degreeLevel).find((option) => option.phaseType === phaseType) ?? null;
+  // The first kind the level may add, in timeline order; proposal if the server hasn't said.
+  const firstAllowedType = (degreeLevel: string) =>
+    optionsFor(degreeLevel).find((option) => option.allowed)?.phaseType ?? "proposal";
 
   const openNewPhaseForm = (degreeLevel = "bachelors") => {
-    const hasProposalPhase = researchPhases.some(
-      (phase) =>
-        phase.degreeLevel === degreeLevel && phase.phaseType === "proposal",
-    );
-    const phaseType = hasProposalPhase ? "progress_report" : "proposal";
+    const phaseType = firstAllowedType(degreeLevel);
     setEditingPhaseId(null);
     setIsPhaseLabelCustom(false);
     setPhaseFormError(null);
@@ -1195,7 +1220,6 @@ function AdminManagement({
       phaseType: phase.phaseType,
       degreeLevel: phase.degreeLevel,
       label: phase.label,
-      sequenceNumber: String(phase.sequenceNumber),
       opensAt: toDateTimeInput(phase.opensAt),
       deadlineAt: toDateTimeInput(phase.deadlineAt),
       defenseDate: toDateTimeInput(phase.defenseDate).slice(0, 10),
@@ -1216,10 +1240,13 @@ function AdminManagement({
     degreeLevel?: string;
   }) => {
     const next = { ...phaseForm, ...changes };
+    // Moving to another level keeps the stage only if that level may add it next.
+    if (changes.degreeLevel && !optionFor(next.degreeLevel, next.phaseType)?.allowed) {
+      next.phaseType = firstAllowedType(next.degreeLevel);
+    }
     const suggestion = suggestPhase(next.phaseType, next.degreeLevel);
     setPhaseForm({
       ...next,
-      sequenceNumber: suggestion.sequenceNumber,
       label: isPhaseLabelCustom ? next.label : suggestion.label,
     });
   };
@@ -1238,7 +1265,6 @@ function AdminManagement({
     }
     const schedule = {
       label: phaseForm.label.trim(),
-      sequenceNumber: Number(phaseForm.sequenceNumber),
       opensAt: isDefense ? null : new Date(phaseForm.opensAt).toISOString(),
       deadlineAt: isDefense
         ? null
@@ -1446,6 +1472,22 @@ function AdminManagement({
     setProposalFormError(null);
     setIsProposalFormOpen(true);
   };
+  // What the timeline can take next, in words, for the level being viewed.
+  const levelOptions = optionsFor(lifecycleLevel);
+  const addableTypes = levelOptions.filter((option) => option.allowed);
+  const timelineComplete = levelPhases.some((phase) => phase.phaseType === "defense");
+  const nextStepText =
+    addableTypes.length === 0
+      ? null
+      : `Next: step ${addableTypes[0].sequenceNumber} can be ${addableTypes
+          .map((option) =>
+            option.phaseType === "proposal"
+              ? "the proposal phase"
+              : option.phaseType === "progress_report"
+                ? "another progress report round"
+                : "the final defense",
+          )
+          .join(" or ")}.`;
   const iconButton =
     "inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700";
   const deleteButton =
@@ -1466,8 +1508,13 @@ function AdminManagement({
         </div>
       )}
 
+      {/* Until the first load lands every list is empty, which would read as
+          "nothing here" — so say it is loading instead. */}
       {view === "overview" && !(isLoaded && areCandidatesLoaded) && (
         <p className="text-sm text-slate-500">Loading your department...</p>
+      )}
+      {view !== "overview" && !isLoaded && (
+        <p className="text-sm text-slate-500">Loading...</p>
       )}
       {view === "overview" && isLoaded && areCandidatesLoaded && (
         <div className="space-y-6">
@@ -1633,16 +1680,17 @@ function AdminManagement({
         </div>
       )}
 
-      {view === "timeline" && (
+      {isLoaded && view === "timeline" && (
         <div className="space-y-4">
           <SectionHeader
             title={`${degreeLevelLabel(lifecycleLevel)} research timeline`}
-            description="Draft the proposal, progress report and final defense phases, then open each one in order. Opening a phase notifies the students and professors involved. Phases can be deleted once they've ended."
+            description="The timeline runs in this order: one proposal phase, then as many progress report rounds as you need (at least one), then the final defense. Draft the phases, then open each one in turn. Opening a phase notifies the students and professors involved. Phases can be deleted once they've ended."
             action={
               <button
                 type="button"
+                disabled={levelOptions.length > 0 && addableTypes.length === 0}
                 onClick={() => openNewPhaseForm(lifecycleLevel)}
-                className={buttonClass}
+                className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-50`}
               >
                 <Plus size={16} aria-hidden="true" />
                 Add research phase
@@ -1654,6 +1702,17 @@ function AdminManagement({
               Batch: <span className="font-medium text-slate-700">{currentBatch.label}</span>
               {" · "}started {formatDefenseDate(currentBatch.startedAt)}
             </p>
+          )}
+          {nextStepText && <p className="text-sm font-medium text-slate-700">{nextStepText}</p>}
+          {levelOptions.length > 0 && addableTypes.length === 0 && (
+            <BlockedReason>
+              {timelineComplete
+                ? "This timeline is complete: it ends with the final defense, so nothing more can be added."
+                : optionFor(lifecycleLevel, "proposal")?.reason ===
+                    "The proposal phase has to be the first step of the timeline"
+                  ? "This timeline doesn't start with a proposal phase, and a proposal phase can only be the first step. Close and delete the phases on it once they've ended, then start again with the proposal phase."
+                  : levelOptions.map((option) => option.reason).filter(Boolean).join(" ")}
+            </BlockedReason>
           )}
           {levelPhases.length === 0 ? (
             <EmptyState
@@ -1762,7 +1821,7 @@ function AdminManagement({
         </div>
       )}
 
-      {view === "proposals" && (
+      {isLoaded && view === "proposals" && (
         <div className="space-y-4">
           <SectionHeader
             title={`${degreeLevelLabel(lifecycleLevel)} proposals`}
@@ -1877,7 +1936,7 @@ function AdminManagement({
         </div>
       )}
 
-      {view === "defenses" && (
+      {isLoaded && view === "defenses" && (
         <div className="space-y-4">
           <SectionHeader
             title={`${degreeLevelLabel(lifecycleLevel)} defenses`}
@@ -2066,7 +2125,7 @@ function AdminManagement({
         </div>
       )}
 
-      {view === "setup" && (
+      {isLoaded && view === "setup" && (
         <div className="space-y-8">
           <section className="space-y-3">
             <SectionHeader
@@ -2194,7 +2253,7 @@ function AdminManagement({
         </div>
       )}
 
-      {view === "departments" && (
+      {isLoaded && view === "departments" && (
         <div className="space-y-4">
           <SectionHeader
             title="Departments"
@@ -2936,8 +2995,8 @@ function AdminManagement({
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
                   {editingPhaseId
-                    ? "Students and professors involved will be told that the schedule changed."
-                    : "Students at this degree level and the professors involved will be notified."}
+                    ? "If the phase is open, the students and professors involved are told the schedule changed."
+                    : "The phase is added as a draft. Nobody is notified until you open it on the timeline."}
                 </p>
               </div>
               <button
@@ -2955,24 +3014,30 @@ function AdminManagement({
                   Research stage
                 </legend>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                  {PHASE_TYPES.map((type) => (
-                    <label
-                      key={type.value}
-                      className={`cursor-pointer rounded-lg border px-3 py-2 text-sm font-medium has-disabled:cursor-not-allowed ${phaseForm.phaseType === type.value ? "border-blue-500 bg-blue-50 text-blue-800" : "border-slate-300 text-slate-700 hover:bg-slate-50"}`}
-                    >
-                      <input
-                        type="radio"
-                        name="phaseType"
-                        value={type.value}
-                        checked={phaseForm.phaseType === type.value}
-                        onChange={() =>
-                          changePhaseKind({ phaseType: type.value })
-                        }
-                        className="sr-only"
-                      />
-                      {type.label}
-                    </label>
-                  ))}
+                  {PHASE_TYPES.map((type) => {
+                    const option = optionFor(phaseForm.degreeLevel, type.value);
+                    // While editing, the stage is fixed, so only the one being edited shows.
+                    const blocked = !editingPhaseId && option !== null && !option.allowed;
+                    return (
+                      <label
+                        key={type.value}
+                        className={`cursor-pointer rounded-lg border px-3 py-2 text-sm font-medium has-disabled:cursor-not-allowed has-disabled:opacity-50 ${phaseForm.phaseType === type.value ? "border-blue-500 bg-blue-50 text-blue-800" : "border-slate-300 text-slate-700 hover:bg-slate-50"}`}
+                      >
+                        <input
+                          type="radio"
+                          name="phaseType"
+                          value={type.value}
+                          disabled={blocked}
+                          checked={phaseForm.phaseType === type.value}
+                          onChange={() =>
+                            changePhaseKind({ phaseType: type.value })
+                          }
+                          className="sr-only"
+                        />
+                        {type.label}
+                      </label>
+                    );
+                  })}
                 </div>
                 <p className="mt-2 text-xs text-slate-500">
                   {
@@ -2981,6 +3046,19 @@ function AdminManagement({
                     )?.hint
                   }
                 </p>
+                {!editingPhaseId && (
+                  <ul className="mt-2 space-y-0.5 text-xs text-slate-500">
+                    {PHASE_TYPES.map((type) => {
+                      const option = optionFor(phaseForm.degreeLevel, type.value);
+                      return option && !option.allowed ? (
+                        <li key={type.value}>
+                          <span className="font-medium text-slate-600">{type.label}:</span>{" "}
+                          {option.reason}
+                        </li>
+                      ) : null;
+                    })}
+                  </ul>
+                )}
               </fieldset>
               <div className="grid gap-4 sm:grid-cols-[1fr_8rem]">
                 <label className="block text-sm font-medium text-slate-700">
@@ -3000,22 +3078,15 @@ function AdminManagement({
                     ))}
                   </select>
                 </label>
-                <label className="block text-sm font-medium text-slate-700">
-                  Step no.
-                  <input
-                    required
-                    type="number"
-                    min="1"
-                    value={phaseForm.sequenceNumber}
-                    onChange={(event) =>
-                      setPhaseForm({
-                        ...phaseForm,
-                        sequenceNumber: event.target.value,
-                      })
-                    }
-                    className={inputClass}
-                  />
-                </label>
+                {/* Steps are numbered in the order phases are added, so there is nothing to type. */}
+                <div className="block text-sm font-medium text-slate-700">
+                  Step
+                  <p className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-normal text-slate-600">
+                    {editingPhaseId
+                      ? (researchPhases.find((phase) => phase.id === editingPhaseId)?.sequenceNumber ?? "—")
+                      : (optionFor(phaseForm.degreeLevel, phaseForm.phaseType)?.sequenceNumber ?? "Next")}
+                  </p>
+                </div>
               </div>
               <label className="block text-sm font-medium text-slate-700">
                 Title
@@ -3123,8 +3194,8 @@ function AdminManagement({
                   {isSavingPhase
                     ? "Saving..."
                     : editingPhaseId
-                      ? "Save and notify"
-                      : "Add and notify"}
+                      ? "Save changes"
+                      : "Add to timeline"}
                 </button>
               </div>
             </form>
