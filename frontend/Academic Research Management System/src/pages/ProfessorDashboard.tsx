@@ -146,7 +146,7 @@ const SECTION_TITLES: Record<Section, string> = {
 };
 const DECISIONS: Decision[] = ["approved", "changes_requested", "rejected"];
 
-const ENDPOINT = import.meta.env.VITE_API_URL
+const ENDPOINT = import.meta.env.VITE_API_URL;
 const CURRENT_USER = gql`
   query CurrentUser {
     currentUser {
@@ -352,8 +352,13 @@ function ProfessorDashboard() {
   const [panelDefenses, setPanelDefenses] = useState<DefenseDetails[]>([]);
   // The panel decides a defense itself: each member votes, and the majority settles
   // it the moment the last vote lands. No admin confirms it afterwards.
-  const [verdictTarget, setVerdictTarget] = useState<DefenseDetails | null>(null);
-  const [verdictForm, setVerdictForm] = useState<{ verdict: "accept" | "reject"; comments: string }>({
+  const [verdictTarget, setVerdictTarget] = useState<DefenseDetails | null>(
+    null,
+  );
+  const [verdictForm, setVerdictForm] = useState<{
+    verdict: "accept" | "reject";
+    comments: string;
+  }>({
     verdict: "accept",
     comments: "",
   });
@@ -398,7 +403,9 @@ function ProfessorDashboard() {
       setVerdictTarget(null);
       await loadPapers();
     } catch (requestError) {
-      setVerdictError(errorMessage(requestError, "Unable to submit your verdict."));
+      setVerdictError(
+        errorMessage(requestError, "Unable to submit your verdict."),
+      );
     } finally {
       setIsSavingVerdict(false);
     }
@@ -412,7 +419,9 @@ function ProfessorDashboard() {
       setProposals(result.assignedProposals);
       setLoadError(null);
     } catch (requestError) {
-      setLoadError(errorMessage(requestError, "Unable to load assigned proposals."));
+      setLoadError(
+        errorMessage(requestError, "Unable to load assigned proposals."),
+      );
     }
   };
 
@@ -434,7 +443,9 @@ function ProfessorDashboard() {
       setDefenses(defensesResult.supervisedDefenses);
       setPanelDefenses(panelResult.myPanelDefenses);
     } catch (requestError) {
-      setLoadError(errorMessage(requestError, "Unable to load supervised papers."));
+      setLoadError(
+        errorMessage(requestError, "Unable to load supervised papers."),
+      );
     }
   };
 
@@ -536,7 +547,9 @@ function ProfessorDashboard() {
       toast.success(`"${proposal.title}" approved.`);
       await reloadAll();
     } catch (requestError) {
-      toast.error(errorMessage(requestError, "Unable to approve the proposal."));
+      toast.error(
+        errorMessage(requestError, "Unable to approve the proposal."),
+      );
     }
   };
 
@@ -569,7 +582,9 @@ function ProfessorDashboard() {
         },
       });
       setReviewingReport(null);
-      toast.success(`Progress report review saved: ${formatStatus(paperDecision)}.`);
+      toast.success(
+        `Progress report review saved: ${formatStatus(paperDecision)}.`,
+      );
       await loadPapers();
     } catch (requestError) {
       setPaperError(errorMessage(requestError, "Unable to submit review."));
@@ -601,7 +616,9 @@ function ProfessorDashboard() {
         },
       });
       setReviewingFinalReport(null);
-      toast.success(`Final report review saved: ${formatStatus(paperDecision)}.`);
+      toast.success(
+        `Final report review saved: ${formatStatus(paperDecision)}.`,
+      );
       await loadPapers();
     } catch (requestError) {
       setPaperError(errorMessage(requestError, "Unable to submit review."));
@@ -627,7 +644,8 @@ function ProfessorDashboard() {
   // Everything waiting on this professor, oldest decisions first within each kind.
   const proposalsToReview = proposals.filter(
     (proposal) =>
-      !proposal.deletedAt && ["submitted", "assigned"].includes(proposal.status),
+      !proposal.deletedAt &&
+      ["submitted", "assigned"].includes(proposal.status),
   );
   const reportsToReview = progressReports.filter(
     (report) => report.status === "submitted",
@@ -639,7 +657,9 @@ function ProfessorDashboard() {
     (defense) => defense.hasEnded && defense.currentStatus === "pending",
   );
   const upcomingPanels = panelDefenses
-    .filter((defense) => !defense.hasEnded && defense.currentStatus === "pending")
+    .filter(
+      (defense) => !defense.hasEnded && defense.currentStatus === "pending",
+    )
     .sort(
       (first, second) =>
         new Date(first.defenseDate).getTime() -
@@ -694,7 +714,9 @@ function ProfessorDashboard() {
           Number(Boolean(second.proposal?.deletedAt)),
     );
   const visiblePanels = panelDefenses
-    .filter((defense) => panelLevel === "all" || defense.degreeLevel === panelLevel)
+    .filter(
+      (defense) => panelLevel === "all" || defense.degreeLevel === panelLevel,
+    )
     .sort(
       (first, second) =>
         Number(first.hasEnded && first.currentStatus !== "pending") -
@@ -759,7 +781,9 @@ function ProfessorDashboard() {
           <div className="text-xs text-slate-500">{detail}</div>
         </div>
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        {actions}
+      </div>
     </li>
   );
 
@@ -803,9 +827,18 @@ function ProfessorDashboard() {
             avatarUrl={resolveAvatarUrl(profile?.avatarUrl)}
             fields={[
               { label: "Email", value: profile?.email ?? "—" },
-              { label: "Department", value: profile?.departmentName ?? "Not assigned" },
-              { label: "Academic rank", value: profile?.academicRank ?? "Not available" },
-              { label: "Max students", value: profile?.maxStudents ?? "Not available" },
+              {
+                label: "Department",
+                value: profile?.departmentName ?? "Not assigned",
+              },
+              {
+                label: "Academic rank",
+                value: profile?.academicRank ?? "Not available",
+              },
+              {
+                label: "Max students",
+                value: profile?.maxStudents ?? "Not available",
+              },
             ]}
           />
         )}
@@ -841,7 +874,9 @@ function ProfessorDashboard() {
                         detail: (
                           <>
                             {reportLabel(defense.kind)} defense
-                            {defense.phaseLabel ? ` · ${defense.phaseLabel}` : ""}{" "}
+                            {defense.phaseLabel
+                              ? ` · ${defense.phaseLabel}`
+                              : ""}{" "}
                             · held {formatDefenseDate(defense.defenseDate)} ·{" "}
                             {defense.studentNames.join(", ") || "—"}
                           </>
@@ -1018,14 +1053,16 @@ function ProfessorDashboard() {
             />
             {visibleResearch.length === 0 ? (
               <EmptyState title="No research here yet">
-                Your department administrator assigns proposals to you. Once
-                you approve one it becomes a paper you supervise.
+                Your department administrator assigns proposals to you. Once you
+                approve one it becomes a paper you supervise.
               </EmptyState>
             ) : (
               visibleResearch.map((item) => {
                 const { proposal, paper } = item;
                 const reports = paper
-                  ? progressReports.filter((report) => report.paperId === paper.id)
+                  ? progressReports.filter(
+                      (report) => report.paperId === paper.id,
+                    )
                   : [];
                 const finalDefenses = paper
                   ? defenses.filter((defense) => defense.paperId === paper.id)
@@ -1052,7 +1089,10 @@ function ProfessorDashboard() {
                         </p>
                       </div>
                       {needsMe(item) && (
-                        <StatusBadge status="submitted" label="Needs your review" />
+                        <StatusBadge
+                          status="submitted"
+                          label="Needs your review"
+                        />
                       )}
                     </div>
 
@@ -1085,14 +1125,19 @@ function ProfessorDashboard() {
                           )}
                           {proposal.deletedAt && (
                             <p className="mt-1 text-xs text-slate-400">
-                              Deleted by {proposal.deletedByName ?? "an admin"} on{" "}
-                              {formatDate(proposal.deletedAt)}
+                              Deleted by {proposal.deletedByName ?? "an admin"}{" "}
+                              on {formatDate(proposal.deletedAt)}
                             </p>
                           )}
                           {defenses
-                            .filter((defense) => defense.proposalId === proposal.id)
+                            .filter(
+                              (defense) => defense.proposalId === proposal.id,
+                            )
                             .map((defense) => (
-                              <DefenseNotice key={defense.id} defense={defense} />
+                              <DefenseNotice
+                                key={defense.id}
+                                defense={defense}
+                              />
                             ))}
                           <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
                             <DocumentActions
@@ -1112,7 +1157,9 @@ function ProfessorDashboard() {
                                   proposalsToReview.includes(proposal) && (
                                     <button
                                       type="button"
-                                      onClick={() => void approveCorrection(proposal)}
+                                      onClick={() =>
+                                        void approveCorrection(proposal)
+                                      }
                                       className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
                                     >
                                       Approve
@@ -1212,7 +1259,9 @@ function ProfessorDashboard() {
                               Final report
                             </p>
                             <StatusBadge
-                              status={paper.finalReportStatus ?? "not_submitted"}
+                              status={
+                                paper.finalReportStatus ?? "not_submitted"
+                              }
                             />
                           </div>
                           {paper.finalReportReviewComment && (
@@ -1269,7 +1318,9 @@ function ProfessorDashboard() {
                                     {defense.currentStatus === "pending" &&
                                     !defense.submissionConfirmed
                                       ? "Awaiting thesis"
-                                      : DEFENSE_TONE_LABELS[defenseTone(defense)]}
+                                      : DEFENSE_TONE_LABELS[
+                                          defenseTone(defense)
+                                        ]}
                                   </span>
                                 </div>
                                 {defense.panelNames.length > 0 && (
@@ -1326,7 +1377,10 @@ function ProfessorDashboard() {
             />
             <SegmentedControl
               label="Degree level"
-              options={countAtLevel(panelDefenses, (defense) => defense.degreeLevel)}
+              options={countAtLevel(
+                panelDefenses,
+                (defense) => defense.degreeLevel,
+              )}
               value={panelLevel}
               onChange={setPanelLevel}
             />
@@ -1343,17 +1397,18 @@ function ProfessorDashboard() {
                       showPeople
                       onError={showError}
                     />
-                    {defense.hasEnded && defense.currentStatus === "pending" && (
-                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2">
-                        <p className="text-xs text-blue-900">
-                          Your panel decides this one. The outcome is settled
-                          once every member has voted.
-                        </p>
-                        {reviewButton("Give or change verdict", () =>
-                          openVerdict(defense),
-                        )}
-                      </div>
-                    )}
+                    {defense.hasEnded &&
+                      defense.currentStatus === "pending" && (
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2">
+                          <p className="text-xs text-blue-900">
+                            Your panel decides this one. The outcome is settled
+                            once every member has voted.
+                          </p>
+                          {reviewButton("Give or change verdict", () =>
+                            openVerdict(defense),
+                          )}
+                        </div>
+                      )}
                   </div>
                 ))}
               </div>
@@ -1363,7 +1418,11 @@ function ProfessorDashboard() {
       </AppShell>
 
       {reviewing && (
-        <Modal title="Review proposal" subtitle={reviewing.title} onClose={closeReview}>
+        <Modal
+          title="Review proposal"
+          subtitle={reviewing.title}
+          onClose={closeReview}
+        >
           {reviewing.studentResponse && (
             <p className="mt-4 rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
               {reviewing.respondedByName
@@ -1396,7 +1455,11 @@ function ProfessorDashboard() {
             </label>
             <FormError message={reviewError} />
             <div className="flex justify-end gap-3 pt-2">
-              <button type="button" onClick={closeReview} className={secondaryButtonClass}>
+              <button
+                type="button"
+                onClick={closeReview}
+                className={secondaryButtonClass}
+              >
                 Cancel
               </button>
               <button
@@ -1413,7 +1476,9 @@ function ProfessorDashboard() {
 
       {(reviewingReport || reviewingFinalReport) && (
         <Modal
-          title={reviewingReport ? "Review progress report" : "Review final report"}
+          title={
+            reviewingReport ? "Review progress report" : "Review final report"
+          }
           subtitle={
             reviewingReport
               ? `${reviewingReport.phaseLabel ?? "Progress report"} · ${paperTitle(reviewingReport.paperId)}`
@@ -1448,7 +1513,9 @@ function ProfessorDashboard() {
             )}
           </div>
           <form
-            onSubmit={reviewingReport ? submitReportReview : submitFinalReportReview}
+            onSubmit={
+              reviewingReport ? submitReportReview : submitFinalReportReview
+            }
             className="mt-4 space-y-4"
           >
             <DecisionPicker value={paperDecision} onChange={setPaperDecision} />
@@ -1465,7 +1532,11 @@ function ProfessorDashboard() {
             </label>
             <FormError message={paperError} />
             <div className="flex justify-end gap-3 pt-2">
-              <button type="button" onClick={closePaperReview} className={secondaryButtonClass}>
+              <button
+                type="button"
+                onClick={closePaperReview}
+                className={secondaryButtonClass}
+              >
                 Cancel
               </button>
               <button
@@ -1529,7 +1600,9 @@ function ProfessorDashboard() {
                     <span className="block font-medium text-slate-800">
                       {choice.label}
                     </span>
-                    <span className="text-xs text-slate-500">{choice.hint}</span>
+                    <span className="text-xs text-slate-500">
+                      {choice.hint}
+                    </span>
                   </span>
                 </label>
               ))}
