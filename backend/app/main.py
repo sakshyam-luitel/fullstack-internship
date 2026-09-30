@@ -50,7 +50,8 @@ graphql_app = GraphQLRouter(schema , context_getter = get_context, multipart_upl
 app = FastAPI()
 origins = [
     "http://localhost:5174",
-    "http://10.1.186.127:5173"
+    "http://10.1.186.127:5173",
+    "http://192.168.18.98:5173",
 ]
 
 app.add_middleware(

@@ -207,7 +207,7 @@ class DepartmentMutation:
         db.commit()
         db.refresh(department)
 
-        return schemas.DepartmentSchema(
+        return schemas.DepartmentSchema(    
             id=department.id,
             name = department.name,
             code = department.code,
