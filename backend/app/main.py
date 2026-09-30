@@ -28,7 +28,7 @@ while True:
         print('Error:', error)
         time.sleep(2)
 
-models.Base.metadata.create_all(bind = database.engine)
+# models.Base.metadata.create_all(bind = database.engine)
 
 
 @strawberry.type
