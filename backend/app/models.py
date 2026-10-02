@@ -99,9 +99,6 @@ class User(Base):
     password = Column(String, nullable=False)
     role:Mapped[Role] = mapped_column(SAEnum(Role) , nullable = False)
     avatar_url = Column(String, nullable=True)
-    # Set by the admin at account-creation time for students (bachelor's/master's/PhD
-    # program) — StudentProfiles.degree_program_id is auto-populated from this when the
-    # profile is created automatically, so it never needs a separate manual step.
     degree_program_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("degreeprograms.id"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
@@ -230,8 +227,6 @@ class ProposalCandidates(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
     proposal_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False)
     student_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    # "pending" until the invited student accepts; a rejection deletes the row outright
-    # instead of lingering, so the slot is immediately free for the owner to invite someone else.
     status = Column(String, nullable=False, server_default=text("'pending'"))
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
@@ -313,25 +308,25 @@ class ProgressReports(Base):
     phase_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("researchphases.id", ondelete="SET NULL"), nullable=True)
 
 
-class Feedback(Base):
-    __tablename__ = "feedback"
+# class Feedback(Base):
+#     __tablename__ = "feedback"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
-    progress_report_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("progressreports.id", ondelete="CASCADE"), nullable=False)
-    supervisor_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
-    content = Column(String, nullable=False)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+#     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+#     progress_report_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("progressreports.id", ondelete="CASCADE"), nullable=False)
+#     supervisor_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
+#     content = Column(String, nullable=False)
+#     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
-class Deadlines(Base):
-    __tablename__ = "deadlines"
+# class Deadlines(Base):
+#     __tablename__ = "deadlines"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
-    paper_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False)
-    deadline_type = Column(String, nullable=False)
-    due_date = Column(TIMESTAMP(timezone=True), nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+#     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+#     paper_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False)
+#     deadline_type = Column(String, nullable=False)
+#     due_date = Column(TIMESTAMP(timezone=True), nullable=False)
+#     created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
+#     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class Defenses(Base):
@@ -376,44 +371,44 @@ class Defenses(Base):
     requires_redefense = Column(Boolean, nullable=False, server_default=text("false"))
 
 
-class JournalSubmissions(Base):
-    __tablename__ = "journalsubmissions"
+# class JournalSubmissions(Base):
+#     __tablename__ = "journalsubmissions"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
-    paper_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False)
-    status = Column(String, nullable=False, default="under_review")
-    submitted_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
-    published_at = Column(TIMESTAMP(timezone=True), nullable=True)
-
-
-class PeerReviews(Base):
-    __tablename__ = "peerreviews"
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
-    journal_submission_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("journalsubmissions.id", ondelete="CASCADE"), nullable=False)
-    reviewer_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
-    decision = Column(String, nullable=True)
-    comments = Column(String, nullable=True)
-    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+#     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+#     paper_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False)
+#     status = Column(String, nullable=False, default="under_review")
+#     submitted_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
+#     published_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
 
-class Conferences(Base):
-    __tablename__ = "conferences"
+# class PeerReviews(Base):
+#     __tablename__ = "peerreviews"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
-    name = Column(String, nullable=False)
-    location = Column(String, nullable=True)
-    conference_date = Column(TIMESTAMP(timezone=True), nullable=True)
-    description = Column(String, nullable=True)
+#     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+#     journal_submission_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("journalsubmissions.id", ondelete="CASCADE"), nullable=False)
+#     reviewer_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
+#     decision = Column(String, nullable=True)
+#     comments = Column(String, nullable=True)
+#     reviewed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 
 
-class ConferencePresentations(Base):
-    __tablename__ = "conferencepresentations"
+# class Conferences(Base):
+#     __tablename__ = "conferences"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
-    conference_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("conferences.id", ondelete="CASCADE"), nullable=False)
-    paper_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False)
-    presenter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
+#     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+#     name = Column(String, nullable=False)
+#     location = Column(String, nullable=True)
+#     conference_date = Column(TIMESTAMP(timezone=True), nullable=True)
+#     description = Column(String, nullable=True)
+
+
+# class ConferencePresentations(Base):
+#     __tablename__ = "conferencepresentations"
+
+#     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
+#     conference_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("conferences.id", ondelete="CASCADE"), nullable=False)
+#     paper_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False)
+#     presenter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
 
 
 class SubmissionWindows(Base):
