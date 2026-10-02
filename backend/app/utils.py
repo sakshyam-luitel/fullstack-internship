@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 from pwdlib import PasswordHash
+from sqlalchemy.exc import IntegrityError
 
 password_hash = PasswordHash.recommended()
 
@@ -285,3 +286,10 @@ def rejected_proposals(db, user_id):
     from . import models
 
     return _student_proposals_query(db, user_id).filter(models.Proposals.status == "rejected").all()
+
+def _commit_user(db) -> None:
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise Exception("A user with this email already exists")
