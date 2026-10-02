@@ -82,7 +82,7 @@ origins = [
     "http://localhost:5173",
     "http://10.1.186.127:5173",
     "http://192.168.18.98:5173",
-    "https://arms-frontend-5znt.onrender.com/"
+    "https://arms-frontend-5znt.onrender.com"
 ]
 
 app.add_middleware(
