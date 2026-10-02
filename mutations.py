@@ -3,16 +3,17 @@ from datetime import datetime, timezone
 from sqlalchemy import Uuid, func
 from sqlalchemy.exc import IntegrityError
 from strawberry.file_uploads import Upload
-from . import mutation_input
-from . import schemas
-from . import models
-from . import constraints
-from . import defenses
-from . import notifications
-from . utils import get_password_hash, committed_student_ids, has_active_proposal, rejected_proposals, save_avatar_image, is_accepted_group_member, ensure_student_profile, proposal_group_member_users, ensure_paper_for_proposal, is_paper_participant, find_my_paper, active_batch, active_batch_id, batch_schema, student_batch_id
-from .research_workflow import (
+from .backend.app import mutation_input
+from .backend.app import schemas
+from .backend.app import models
+from .backend.app import constraints
+from .backend.app import defenses
+from .backend.app import notifications
+from .backend.app.utils import get_password_hash, committed_student_ids, has_f_proposal, rejected_proposals, save_avatar_image, is_accepted_group_member, ensure_student_profile, proposal_group_member_users, ensure_paper_for_proposal, is_paper_participant, find_my_paper, active_batch, active_batch_id, batch_schema, student_batch_id
+from .backend.app.research_workflow import (
     active_phases,
-    level_phases,
+    next_sequence_number,
+    phase_addition_rules,
     current_open_phase,
     ensure_phase_accepts_submissions,
     is_phase_open,
@@ -24,7 +25,7 @@ from .research_workflow import (
     validate_phase_can_open,
     validate_phase_for_paper,
 )
-from . permissions import IsSuperAdmin, IsAdminOrSuperAdmin, IsDepartmentAdmin, IsStudent, IsProfessor, IsAuthenticated
+from .backend.app.permissions import IsSuperAdmin, IsAdminOrSuperAdmin, IsDepartmentAdmin, IsStudent, IsProfessor, IsAuthenticated
 
 
 def _ensure_email_available(db, email: str, exclude_user_id=None) -> None:
@@ -206,7 +207,7 @@ class DepartmentMutation:
         db.commit()
         db.refresh(department)
 
-        return schemas.DepartmentSchema(
+        return schemas.DepartmentSchema(    
             id=department.id,
             name = department.name,
             code = department.code,
@@ -918,7 +919,10 @@ class ProposalsMutation:
             schemas.ProposalMemberSchema(id=member.id, name=member.name, status=member_status)
             for member, member_status in db.query(models.User, models.ProposalCandidates.status)
             .join(models.ProposalCandidates, models.ProposalCandidates.student_id == models.User.id)
-            .filter(models.ProposalCandidates.proposal_id == proposal.id)
+            .filter(
+                models.ProposalCandidates.proposal_id == proposal.id,
+                models.ProposalCandidates.status != "rejected",
+            )
             .order_by(models.User.name)
             .all()
         ]
@@ -975,28 +979,35 @@ class ProposalCandidateMutation:
             raise Exception(f"{member.name} has no degree program on file — ask an admin to set one first")
         if member_level != models.DegreeLevel.bachelors:
             raise Exception("Group members must be Bachelor's-level students")
-        if member.degree_program_id != owner.degree_program_id:
+        if constraints.get_degree_program_id(db, member) != constraints.get_degree_program_id(db, owner):
             raise Exception("Group members must belong to the same Bachelor's degree program")
 
-        if db.query(models.ProposalCandidates).filter(
+        existing = db.query(models.ProposalCandidates).filter(
             models.ProposalCandidates.proposal_id == proposal.id,
             models.ProposalCandidates.student_id == member.id,
-        ).first():
+        ).first()
+        if existing and existing.status != "rejected":
             raise Exception("Student is already in this group")
         if member.id in committed_student_ids(db, exclude_proposal_id=proposal.id):
             raise Exception("Student already belongs to another proposal group")
+        # Declined invites don't hold a place in the group.
         member_count = db.query(models.ProposalCandidates).filter(
-            models.ProposalCandidates.proposal_id == proposal.id
+            models.ProposalCandidates.proposal_id == proposal.id,
+            models.ProposalCandidates.status != "rejected",
         ).count()
         if member_count >= constraints.MAX_BACHELOR_GROUP_SIZE - 1:
             raise Exception(f"A proposal can have a maximum of {constraints.MAX_BACHELOR_GROUP_SIZE} students")
-        proposal_candidate = models.ProposalCandidates(
-            proposal_id = student_input.proposal_id,
-            student_id = student_input.student_id,
-            status = "pending",
-        )
-
-        db.add(proposal_candidate)
+        if existing:
+            # Inviting someone who declined asks them again.
+            existing.status = "pending"
+            proposal_candidate = existing
+        else:
+            proposal_candidate = models.ProposalCandidates(
+                proposal_id = student_input.proposal_id,
+                student_id = student_input.student_id,
+                status = "pending",
+            )
+            db.add(proposal_candidate)
         db.commit()
         db.refresh(proposal_candidate)
 
@@ -1057,28 +1068,34 @@ class ProposalCandidateMutation:
             raise Exception(f"{member.name} has no degree program on file — ask an admin to set one first")
         if member_level != models.DegreeLevel.bachelors:
             raise Exception("Group members must be Bachelor's-level students")
-        if member.degree_program_id != owner.degree_program_id:
+        if constraints.get_degree_program_id(db, member) != constraints.get_degree_program_id(db, owner):
             raise Exception("Group members must belong to the same Bachelor's degree program")
 
-        if db.query(models.ProposalCandidates).filter(
+        existing = db.query(models.ProposalCandidates).filter(
             models.ProposalCandidates.proposal_id == proposal.id,
             models.ProposalCandidates.student_id == member.id,
-        ).first():
+        ).first()
+        if existing and existing.status != "rejected":
             raise Exception("Student is already in this group")
         if member.id in committed_student_ids(db, exclude_proposal_id=proposal.id):
             raise Exception("Student already belongs to another proposal group")
         if db.query(models.ProposalCandidates).filter(
-            models.ProposalCandidates.proposal_id == proposal.id
+            models.ProposalCandidates.proposal_id == proposal.id,
+            models.ProposalCandidates.status != "rejected",
         ).count() >= constraints.MAX_BACHELOR_GROUP_SIZE - 1:
             raise Exception(f"A proposal can have a maximum of {constraints.MAX_BACHELOR_GROUP_SIZE} students")
-        candidate = models.ProposalCandidates(
-            proposal_id=proposal.id,
-            student_id=member.id,
-            # Admin placement is authoritative and skips the request/accept flow that
-            # applies when a student invites peers into their own proposal.
-            status="accepted",
-        )
-        db.add(candidate)
+        # Admin placement is authoritative and skips the request/accept flow that
+        # applies when a student invites peers into their own proposal.
+        if existing:
+            existing.status = "accepted"
+            candidate = existing
+        else:
+            candidate = models.ProposalCandidates(
+                proposal_id=proposal.id,
+                student_id=member.id,
+                status="accepted",
+            )
+            db.add(candidate)
         db.commit()
         db.refresh(candidate)
         return schemas.ProposalCandidateSchema(
@@ -1132,12 +1149,9 @@ class ProposalCandidateMutation:
             student_id=candidate.student_id,
             status=response,
         )
-        if response == "rejected":
-            # Deleting (rather than keeping a rejected row) frees the slot immediately
-            # so the proposal owner can edit the group and invite someone else.
-            db.delete(candidate)
-        else:
-            candidate.status = "accepted"
+        # A declined row stays, so the owner sees who declined and can ask again. It
+        # holds no place in the group and doesn't count as belonging to it.
+        candidate.status = response
         db.commit()
         return result
 
@@ -1414,12 +1428,15 @@ class DefenseMutation:
             raise Exception("Choose one proposal, progress report or final report to defend")
         phase = None
         if admin_input.phase_id:
-            phase = active_phases(db.query(models.ResearchPhase)).filter(models.ResearchPhase.id == admin_input.phase_id).first()
+            # Deleted phases are looked up too: a proposal or report stays filed under
+            # the round it was submitted in after that round is cleared off the
+            # timeline, and its defense still belongs to that round.
+            phase = db.query(models.ResearchPhase).filter(models.ResearchPhase.id == admin_input.phase_id).first()
             if not phase or (phase.department_id and phase.department_id != current_user.department_id):
                 raise Exception("Research phase not found in your department")
 
         def own_phase(phase_id):
-            return active_phases(db.query(models.ResearchPhase)).filter(models.ResearchPhase.id == phase_id).first() if phase_id else None
+            return db.query(models.ResearchPhase).filter(models.ResearchPhase.id == phase_id).first() if phase_id else None
 
         if admin_input.proposal_id:
             proposal = db.query(models.Proposals).filter(models.Proposals.id == admin_input.proposal_id, models.Proposals.deleted_at.is_(None)).first()
@@ -1451,6 +1468,10 @@ class DefenseMutation:
                 raise Exception("Paper not found")
             if paper.final_report_status != "approved":
                 raise Exception("The final report must be approved before a defense can be scheduled")
+            # A final defense is planned into the defense phase on the timeline now;
+            # a deleted one is left for final_defense_phase to replace below.
+            if phase is not None and phase.deleted_at is not None:
+                phase = None
             if phase:
                 validate_phase_for_paper(db, phase.id, paper, models.PhaseType.defense)
             target = {"paper_id": paper.id}
@@ -1611,14 +1632,13 @@ class ResearchPhaseMutation:
         batch = active_batch(db)
         if batch is None:
             raise Exception("No batch is running — start one before scheduling phases")
-        # Default to the next free step for this level, so the common case needs no
-        # arithmetic from the admin. An explicit number still wins.
-        sequence_number = admin_input.sequence_number
-        if sequence_number is None:
-            existing = level_phases(db, degree_level, current_user.department_id, batch.id)
-            sequence_number = max((phase.sequence_number for phase in existing), default=0) + 1
-        if sequence_number < 1:
-            raise Exception("Sequence number must be at least 1")
+        # The timeline runs proposal, then progress rounds, then the final defense.
+        reason = phase_addition_rules(db, degree_level, current_user.department_id, batch.id)[phase_type]
+        if reason:
+            raise Exception(reason)
+        # Always the next step: appending in the order above is what keeps the
+        # timeline in order, so a typed step number is ignored.
+        sequence_number = next_sequence_number(db, degree_level, current_user.department_id, batch.id)
         if phase_type == models.PhaseType.defense:
             if not admin_input.defense_date:
                 raise Exception("A defense phase requires one shared defense date")
@@ -1663,9 +1683,11 @@ class ResearchPhaseMutation:
             raise Exception(f'"{phase.label}" is closed — reopen it before changing its schedule')
         if admin_input.label is not None and not admin_input.label.strip():
             raise Exception("A phase label is required")
-        if admin_input.sequence_number is not None and admin_input.sequence_number < 1:
-            raise Exception("Sequence number must be at least 1")
-        for field in ("label", "sequence_number", "opens_at", "deadline_at", "defense_date", "grace_period_enabled"):
+        # Steps are numbered by the order phases were added in, which is the order
+        # the rules in phase_addition_rules keep; moving one would break it.
+        if admin_input.sequence_number is not None and admin_input.sequence_number != phase.sequence_number:
+            raise Exception("Step numbers follow the timeline order and can't be changed")
+        for field in ("label", "opens_at", "deadline_at", "defense_date", "grace_period_enabled"):
             value = getattr(admin_input, field)
             if value is not None:
                 setattr(phase, field, value.strip() if field == "label" else value)
@@ -1822,14 +1844,13 @@ class BatchMutation:
         batch = models.Batch(label=label, status=models.BatchStatus.active, created_by=current_user.id)
         db.add(batch)
         try:
-            db.flush()
+            db.flush()  
         except IntegrityError:
             db.rollback()
             raise Exception("Another batch is already active — reload and try again")
         db.commit()
         db.refresh(batch)
         return batch_schema(db, batch)
-
 
 @strawberry.type
 class NotificationMutation:
