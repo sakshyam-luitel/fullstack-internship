@@ -18,7 +18,7 @@ def _ensure_email_available(db, email: str, exclude_user_id=None) -> None:
 
 @strawberry.type
 class UserMutation:
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAdminOrSuperAdmin])
     def create_user(self , info : strawberry.Info , admin_input : mutation_input.UserInput ) -> schemas.UserSchema:
         db = info.context.get("db")
         current_user = info.context.get("current_user")
@@ -32,7 +32,7 @@ class UserMutation:
             department_id = current_user.department_id
         else:
             department_id = admin_input.department_id
-        if requested_role != "super_admin" and not department_id:
+        if not department_id:
             raise Exception("A department is required")
 
         email = admin_input.email.strip()
