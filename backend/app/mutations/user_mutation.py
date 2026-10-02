@@ -17,7 +17,7 @@ def _ensure_email_available(db, email: str, exclude_user_id=None) -> None:
 
 @strawberry.type
 class UserMutation:
-    @strawberry.mutation(permission_classes=[IsAdminOrSuperAdmin])
+    @strawberry.mutation
     def create_user(self , info : strawberry.Info , admin_input : mutation_input.UserInput ) -> schemas.UserSchema:
         db = info.context.get("db")
         current_user = info.context.get("current_user")
