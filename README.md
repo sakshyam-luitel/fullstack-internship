@@ -13,6 +13,7 @@ This guide covers:
 7. [How a piece of research moves through the system](#7-how-a-piece-of-research-moves-through-the-system)
 8. [Rules worth knowing](#8-rules-worth-knowing)
 9. [Troubleshooting](#9-troubleshooting)
+10. [Internship journey](#10-internship-journey)
 
 ---
 
@@ -350,16 +351,50 @@ Plan final defense  ───►  Submit final thesis
 
 ---
 
-## Internship learning log
+## 10. Internship journey
 
-Month 1
+### 8-Week Full-Stack Internship Report: Building ARMS
 
-What I've learned:
-1. React , Tailwindcss , Responsive Design
-2. Graphql queries , mutations , authentication using Bearer Token
-3. Rest api , Graphql api
-4. Database connection using psycopg and writing queries with sqlalchemy orms
-5. Wrote dockerfile and dockercompose and containerized application
-6. containerized multiple application individually by building dockerfile and also by dockercompose
-7. Handled CRUD opeartion in both REST and GraphQL using Fastapi
-8. Used Role Based Access Control(RBAC) using permission classes
+Over eight weeks I built ARMS from scratch. It's a role-based system that manages a college department's research process: proposals, supervision, progress reports, final submissions and defense panels for Bachelor's, Master's and PhD students. Going in, I hadn't worked with most of this stack before. FastAPI and Strawberry GraphQL on the backend, React with TypeScript and Apollo on the frontend, PostgreSQL through SQLAlchemy, and Docker Compose to tie it all together. It was a lot to pick up at once, but building one real project around all of it made it stick.
+
+**Week 1: Getting Set Up**
+
+The first week was mostly figuring out what I was actually building and getting my machine ready for it. I installed Python 3.13 with uv, Node.js 22, PostgreSQL 16, and Docker Desktop, then spent a good chunk of time just reading docs for FastAPI, Strawberry GraphQL and SQLAlchemy since none of them were familiar to me. I also poked around React 19 with Vite and Tailwind to get a feel for the frontend side. By the end of the week I had a basic repo structure in place and managed to get one "hello world" GraphQL query working from the frontend all the way through to the backend. Small win, but it made everything after it feel less abstract.
+
+**Week 2: Backend Basics, Auth and the Data Model**
+
+This week was about laying the actual foundation. I designed the core database models, starting with a User model that carries a Role (super admin, department admin, student, professor, external) and a Department model. Then I got JWT authentication working: creating and verifying tokens, and wiring up a context getter so every GraphQL resolver could pull the current logged-in user off the request. I wrote the login mutation and ran my first Alembic migration. I also learned the hard way that create_all running at startup and Alembic's migration history can drift apart if you're not careful, which caused a confusing bug I had to backtrack through.
+
+**Week 3: Building Out GraphQL and Access Control**
+
+Once the basics were working, I split the schema up properly instead of dumping everything into one file. One query class for reads, and separate mutation classes for each domain area (users, departments, degree programs, clusters and so on), all combined into a single schema through multiple inheritance. Alongside that I wrote permission classes like IsAuthenticated, IsStudent, IsSuperAdmin, IsDepartmentAdmin and IsProfessor to gate access on individual fields and mutations. I also ran into an interesting chicken-and-egg problem: if only a super admin can create accounts, how do you make the very first one? I solved it with a small one-off script that inserts the first super admin directly through SQLAlchemy, bypassing the API entirely.
+
+**Week 4: Frontend Foundations**
+
+With the backend in decent shape, I moved to the frontend. I set up React with Vite, TypeScript and Tailwind, and configured a single Apollo Client pointed at the GraphQL endpoint. I built role-based routing so that after logging in, a student, professor or admin each land on their own dashboard automatically. I also put together a handful of shared components like AuthField, AuthLayout, Button and NavigationBar, and built the login page itself. One habit I picked up here that I'm glad I did early: keeping all GraphQL queries and mutations in dedicated files instead of scattering them inside components.
+
+**Week 5: The Core Workflow, Proposals and Supervision**
+
+This was probably the most conceptually involved week. I modeled the actual research pipeline: departments containing degree programs and clusters, which connect to student and professor profiles, which connect to proposals, and eventually papers. I had to implement rules that differ by degree level. Bachelor's students work in groups of up to three with one shared supervisor, while Master's and PhD students submit individually. I also built the logic that caps how many students a professor can supervise at once (one Bachelor's group, five Master's students, four PhD students, twelve total). Along the way I learned to use SQLAlchemy's aliased joins, which was necessary because a single proposal references several different users (who submitted it, who supervises it, who reviewed it) and I needed to resolve all of them in one query rather than three separate ones.
+
+**Week 6: Research Timeline and Phases**
+
+Early on I'd been handling deadlines pretty loosely, and it started to show. So this week I replaced that with a proper phase system: an ordered timeline the admin builds manually, with distinct proposal phases, progress report rounds and a final defense phase, each scoped to a degree level. Students can only submit while the matching phase is open. I added status tracking for submissions (submitted, assigned, changes requested, approved, rejected) and hooked up notifications so people get pinged when a phase opens, a proposal gets assigned, or a defense gets scheduled or moved. I also added soft deletion for phases here, since deleting one shouldn't erase every submission that happened under it. It just hides the phase going forward while everything submitted stays on record.
+
+**Week 7: Defenses, PDFs and Getting Everything Into Docker**
+
+This week had two big pieces. First, the defense workflow itself: proposal defenses, progress report defenses and final defenses, each scheduled with a date, time, location and a panel of professors. Second, PDF handling for every kind of submission, capped at 20 MB and locked once submitted so it can't quietly be swapped out later. Since the whole thing was meant to run on a local network rather than the cloud, I stored the actual files on disk and kept only the metadata in Postgres. The other half of the week went into writing Dockerfiles for the backend and frontend and putting together a working docker-compose.yml. I hit more problems here than I expected: a YAML syntax mistake, confusion about container networking versus host networking, a Postgres version mismatch that broke an existing volume, and getting healthchecks and depends_on to actually wait for the database properly.
+
+**Week 8: Polishing, Deploying and Wrapping Up**
+
+The last week was about tightening things up rather than adding anything flashy. I added a proper audit trail so every submission, whether accepted or rejected, gets permanently recorded instead of disappearing. I made deletion behave consistently as a soft delete across the app, so a proposal an admin deletes vanishes from the admin's list but still shows up, marked as deleted, on the student's side, with the actual file left untouched in storage. I then deployed the whole thing on the local network, which meant fixing port mappings, opening up CORS for the LAN, and pointing the frontend at the machine's actual LAN IP instead of localhost. I finished by writing the project's user guide. Looking back, the biggest thing I took away from this internship wasn't any single technology. It was how much "full-stack" really comes down to getting the seams right: making sure auth flows consistently through every layer, that roles are enforced the same way on both ends, and that Docker networking behaves the way the app actually expects it to.
+
+### Skills gained
+
+- React, Tailwind CSS, responsive design
+- GraphQL queries and mutations, JWT bearer-token authentication
+- REST versus GraphQL, and when each one is actually the better fit
+- PostgreSQL through SQLAlchemy, schema migrations with Alembic
+- Writing Dockerfiles and Docker Compose files, multi-container orchestration
+- CRUD operations in both REST and GraphQL using FastAPI
+- Role-based access control through permission classes

@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 from pwdlib import PasswordHash
+from sqlalchemy.exc import IntegrityError
 
 password_hash = PasswordHash.recommended()
 
@@ -250,7 +251,8 @@ def committed_student_ids(db, exclude_proposal_id=None):
     candidates_query = (
         db.query(models.ProposalCandidates.student_id)
         .join(models.Proposals, models.ProposalCandidates.proposal_id == models.Proposals.id)
-        .filter(*active_proposal_filter(models))
+        # A declined invite ties nobody to that group.
+        .filter(*active_proposal_filter(models), models.ProposalCandidates.status != "rejected")
     )
     if exclude_proposal_id is not None:
         submitted_by_query = submitted_by_query.filter(models.Proposals.id != exclude_proposal_id)
@@ -284,3 +286,10 @@ def rejected_proposals(db, user_id):
     from . import models
 
     return _student_proposals_query(db, user_id).filter(models.Proposals.status == "rejected").all()
+
+def _commit_user(db) -> None:
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise Exception("A user with this email already exists")

@@ -34,15 +34,23 @@ MAX_TOTAL_STUDENTS_PER_PROFESSOR = 12
 ACTIVE_SUPERVISION_STATUSES = {"assigned", "approved", "accepted", "changes_requested", "in_progress"}
 
 
-def get_degree_level(db, user):
-    """A user's degree level, derived from their account's degree program, or from
-    their student profile for accounts created before users.degree_program_id existed.
-    Returns None if the user has no student degree program on file."""
+def get_degree_program_id(db, user):
+    """A student's degree program: the account's, or their student profile's for
+    accounts created before users.degree_program_id existed. Compare programs with
+    this, never with user.degree_program_id alone, or those students never match."""
     if not user:
         return None
-    program_id = user.degree_program_id or db.query(models.StudentProfiles.degree_program_id).filter(
+    return user.degree_program_id or db.query(models.StudentProfiles.degree_program_id).filter(
         models.StudentProfiles.user_id == user.id
     ).scalar()
+
+
+def get_degree_level(db, user):
+    """A user's degree level, derived from their degree program (see
+    get_degree_program_id). Returns None if the user has no student degree program on file."""
+    if not user:
+        return None
+    program_id = get_degree_program_id(db, user)
     if not program_id:
         return None
     program = db.query(models.DegreePrograms).filter(models.DegreePrograms.id == program_id).first()
@@ -148,7 +156,7 @@ def check_group_composition(db, level, candidate_users, owner=None):
     for candidate in candidate_users:
         if get_degree_level(db, candidate) != models.DegreeLevel.bachelors:
             raise Exception(f"{candidate.name} must be a Bachelor's-level student to join this group")
-        if owner and candidate.degree_program_id != owner.degree_program_id:
+        if owner and get_degree_program_id(db, candidate) != get_degree_program_id(db, owner):
             raise Exception("Bachelor's group members must belong to the same degree program")
 
 

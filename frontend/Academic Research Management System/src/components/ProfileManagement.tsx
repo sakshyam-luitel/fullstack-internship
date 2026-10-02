@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pencil, Plus, X } from "lucide-react";
 import { print } from "graphql";
 import { API_ORIGIN } from "../utils/uploadAvatar";
+import { useToast } from "../hooks/useToast";
 import {
   CREATE_PROFESSOR_PROFILE,
   CREATE_STUDENT_PROFILE,
@@ -46,6 +47,8 @@ interface ProfileManagementProps {
   // Degree level of the selected student group, used to narrow the program list.
   degreeLevel?: string | null;
   onSaved: () => Promise<void>;
+  // Opens the account (name, email, password) editor, so both live on one row.
+  onEditAccount?: (userId: string) => void;
 }
 
 const inputClass = "mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-normal outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100";
@@ -62,7 +65,8 @@ async function request(document: typeof CREATE_STUDENT_PROFILE, variables: Recor
 }
 
 // Student or professor profiles for one group of users, with a create/edit form.
-function ProfileManagement({ profileType, users, profiles, degreePrograms, professors, degreeLevel, onSaved }: ProfileManagementProps) {
+function ProfileManagement({ profileType, users, profiles, degreePrograms, professors, degreeLevel, onSaved, onEditAccount }: ProfileManagementProps) {
+  const toast = useToast();
   const [form, setForm] = useState(emptyForm);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -112,6 +116,7 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
         });
       }
       setIsFormOpen(false);
+      toast.success(editingUserId ? "Profile updated." : "Profile created.");
       await onSaved();
     } catch (saveError) {
       setFormError(saveError instanceof Error ? saveError.message : "Unable to save the profile.");
@@ -138,80 +143,54 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
           Create {noun} profile
         </button>
       </div>
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[760px] border-collapse text-left text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-              <th className="px-4 py-3">Name</th>
-              {profileType === "student" ? (
-                <>
-                  <th className="px-4 py-3">Roll number</th>
-                  <th className="px-4 py-3">Degree program</th>
-                  <th className="px-4 py-3">Supervisor</th>
-                  <th className="px-4 py-3">Status</th>
-                </>
-              ) : (
-                <>
-                  <th className="px-4 py-3">Academic rank</th>
-                  <th className="px-4 py-3">Maximum students</th>
-                </>
-              )}
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">No {noun}s in this group.</td>
-              </tr>
-            ) : (
-              users.map((user) => {
-                const profile = profileFor(user.id);
-                return (
-                  <tr key={user.id} className="border-b border-slate-100">
-                    <td className="px-4 py-3">
-                      <p className="font-medium text-slate-800">{user.name}</p>
-                      <p className="text-xs text-slate-500">{user.email}</p>
-                    </td>
-                    {!profile ? (
-                      <td colSpan={profileType === "student" ? 4 : 2} className="px-4 py-3 text-sm italic text-slate-400">No profile yet</td>
-                    ) : profileType === "student" ? (
-                      <>
-                        <td className="px-4 py-3 text-slate-600">{profile.rollNumber ?? "—"}</td>
-                        <td className="px-4 py-3 text-slate-600">{profile.degreeProgramName ?? "—"}</td>
-                        <td className="px-4 py-3 text-slate-600">{profile.supervisorName ?? "Not assigned"}</td>
-                        <td className="px-4 py-3 capitalize text-slate-600">{profile.status ?? "active"}</td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="px-4 py-3 text-slate-600">{profile.academicRank ?? "—"}</td>
-                        <td className="px-4 py-3 text-slate-600">{profile.maxStudents ?? "—"}</td>
-                      </>
-                    )}
-                    <td className="px-4 py-3 text-right">
-                      {profile ? (
-                        <button
-                          type="button"
-                          title={`Edit ${user.name}'s profile`}
-                          aria-label={`Edit ${user.name}'s profile`}
-                          onClick={() => openForm(user)}
-                          className="inline-flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-blue-50 hover:text-blue-700"
-                        >
-                          <Pencil size={17} aria-hidden="true" />
-                        </button>
-                      ) : (
-                        <button type="button" onClick={() => openForm(user)} className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50">
-                          Create profile
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+      {users.length === 0 ? (
+        <p className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">No {noun}s in this group.</p>
+      ) : (
+        <ul className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white shadow-sm">
+          {users.map((user) => {
+            const profile = profileFor(user.id);
+            const details = !profile
+              ? null
+              : profileType === "student"
+                ? [
+                    profile.rollNumber ? `Roll ${profile.rollNumber}` : null,
+                    profile.degreeProgramName,
+                    `Supervisor: ${profile.supervisorName ?? "not assigned"}`,
+                    profile.status ?? "active",
+                  ]
+                : [profile.academicRank, profile.maxStudents !== null ? `Up to ${profile.maxStudents} students` : null];
+            return (
+              <li key={user.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="font-medium text-slate-800">{user.name}</p>
+                  <p className="truncate text-xs text-slate-500">{user.email}</p>
+                  {details ? (
+                    <p className="mt-0.5 text-xs text-slate-600">{details.filter(Boolean).join(" · ")}</p>
+                  ) : (
+                    <p className="mt-0.5 text-xs italic text-amber-700">No {noun} profile yet</p>
+                  )}
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  {onEditAccount && (
+                    <button type="button" onClick={() => onEditAccount(user.id)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                      <Pencil size={14} aria-hidden="true" /> Account
+                    </button>
+                  )}
+                  {profile ? (
+                    <button type="button" onClick={() => openForm(user)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                      <Pencil size={14} aria-hidden="true" /> Profile
+                    </button>
+                  ) : (
+                    <button type="button" onClick={() => openForm(user)} className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700">
+                      <Plus size={14} aria-hidden="true" /> Create profile
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
 
       {isFormOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
