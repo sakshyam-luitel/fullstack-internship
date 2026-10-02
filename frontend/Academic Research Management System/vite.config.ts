@@ -7,5 +7,8 @@ export default defineConfig({
   plugins: [react(),
     tailwindcss(),
   ],
+  server:{
+    allowedHosts : ['arms-frontend-5znt.onrender.com']
+  }
   
 })

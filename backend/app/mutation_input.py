@@ -224,8 +224,8 @@ class ResearchPhaseInput:
     phase_type: str  # proposal | progress_report | defense
     degree_level: str  # bachelors | masters | phd
     label: str
-    # Omit to take the next free step for this degree level in the current batch,
-    # which is what the admin wants nearly every time.
+    # Ignored: a new phase always takes the next step of its degree level's
+    # timeline (see research_workflow.phase_addition_rules). Kept for older clients.
     sequence_number: Optional[int] = None
     opens_at: Optional[datetime.datetime] = None
     deadline_at: Optional[datetime.datetime] = None

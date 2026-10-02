@@ -20,8 +20,11 @@ interface LoginVariables {
 }
 
 function normalizeRole(value: string): string {
-  const role = value.toLowerCase().trim().replace(/[\s-]+/g, "_");
-  return role.includes(".") ? role.split(".").pop() ?? role : role;
+  const role = value
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, "_");
+  return role.includes(".") ? (role.split(".").pop() ?? role) : role;
 }
 
 // Present the sign-in form; submission behavior can be connected to the backend later.
@@ -30,19 +33,22 @@ function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const [login, { loading, error }] = useMutation<LoginData, LoginVariables>(LOGIN , {
-    onCompleted : (data) => {
-      localStorage.setItem("accessToken", data.login.accessToken);
-      const role = normalizeRole(data.login.role);
-      localStorage.setItem("userRole", role);
-      if (["admin", "super_admin", "student", "professor"].includes(role)) {
-        navigate("/dashboard");
-      }
+  const [login, { loading, error }] = useMutation<LoginData, LoginVariables>(
+    LOGIN,
+    {
+      onCompleted: (data) => {
+        localStorage.setItem("accessToken", data.login.accessToken);
+        const role = normalizeRole(data.login.role);
+        localStorage.setItem("userRole", role);
+        if (["admin", "super_admin", "student", "professor"].includes(role)) {
+          navigate("/dashboard");
+        }
+      },
+      onError: (error) => {
+        console.error("Login failed:", error.message);
+      },
     },
-    onError : (error) =>   {
-      console.error("Login failed:", error.message)
-    }
-  });
+  );
 
   return (
     <AuthLayout
