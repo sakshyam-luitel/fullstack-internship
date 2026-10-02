@@ -227,9 +227,6 @@ class ProposalCandidates(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4, nullable=False)
     proposal_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False)
     student_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    # "pending" until the invited student answers, then "accepted" or "rejected". A
-    # rejected row stays so the owner can see who declined and invite them again; it
-    # takes no place in the group and doesn't tie the student to it.
     status = Column(String, nullable=False, server_default=text("'pending'"))
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("now()"))
 

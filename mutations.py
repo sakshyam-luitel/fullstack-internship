@@ -3,14 +3,14 @@ from datetime import datetime, timezone
 from sqlalchemy import Uuid, func
 from sqlalchemy.exc import IntegrityError
 from strawberry.file_uploads import Upload
-from . import mutation_input
-from . import schemas
-from . import models
-from . import constraints
-from . import defenses
-from . import notifications
-from . utils import get_password_hash, committed_student_ids, has_active_proposal, rejected_proposals, save_avatar_image, is_accepted_group_member, ensure_student_profile, proposal_group_member_users, ensure_paper_for_proposal, is_paper_participant, find_my_paper, active_batch, active_batch_id, batch_schema, student_batch_id
-from .research_workflow import (
+from .backend.app import mutation_input
+from .backend.app import schemas
+from .backend.app import models
+from .backend.app import constraints
+from .backend.app import defenses
+from .backend.app import notifications
+from .backend.app.utils import get_password_hash, committed_student_ids, has_f_proposal, rejected_proposals, save_avatar_image, is_accepted_group_member, ensure_student_profile, proposal_group_member_users, ensure_paper_for_proposal, is_paper_participant, find_my_paper, active_batch, active_batch_id, batch_schema, student_batch_id
+from .backend.app.research_workflow import (
     active_phases,
     next_sequence_number,
     phase_addition_rules,
@@ -25,7 +25,7 @@ from .research_workflow import (
     validate_phase_can_open,
     validate_phase_for_paper,
 )
-from . permissions import IsSuperAdmin, IsAdminOrSuperAdmin, IsDepartmentAdmin, IsStudent, IsProfessor, IsAuthenticated
+from .backend.app.permissions import IsSuperAdmin, IsAdminOrSuperAdmin, IsDepartmentAdmin, IsStudent, IsProfessor, IsAuthenticated
 
 
 def _ensure_email_available(db, email: str, exclude_user_id=None) -> None:
@@ -1844,14 +1844,13 @@ class BatchMutation:
         batch = models.Batch(label=label, status=models.BatchStatus.active, created_by=current_user.id)
         db.add(batch)
         try:
-            db.flush()
+            db.flush()  
         except IntegrityError:
             db.rollback()
             raise Exception("Another batch is already active — reload and try again")
         db.commit()
         db.refresh(batch)
         return batch_schema(db, batch)
-
 
 @strawberry.type
 class NotificationMutation:
