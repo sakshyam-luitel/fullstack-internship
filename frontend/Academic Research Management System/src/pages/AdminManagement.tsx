@@ -45,175 +45,51 @@ import {
   SCHEDULE_RESEARCH_DEFENSE,
   UPDATE_RESEARCH_PHASE,
 } from "../mutations/mutations";
+import {
+  buttonClass,
+  defenseKindLabel,
+  defenseReportLabel,
+  DEGREE_LEVELS,
+  DEFENSE_KINDS,
+  degreeLevelLabel,
+  describeDefenseSlot,
+  emptyPhaseForm,
+  formatPhaseDateTime,
+  inputClass,
+  phaseTypeLabel,
+  PHASE_TYPES,
+  toDateTimeInput,
+} from "../utils/adminManagement";
+import PhaseStatusBadge from "../components/PhaseStatusBadge";
+import type {
+  AdminManagementProps,
+  Batch,
+  Cluster,
+  DegreeProgram,
+  DefenseCandidate,
+  DefenseKind,
+  Department,
+  GraphQLResult,
+  PhaseOption,
+  PlanTarget,
+  Profile,
+  Proposal,
+  ResearchPhase,
+  ScheduledDefense,
+  User,
+} from "../types/adminManagement";
 
-interface Department {
-  id: string;
-  name: string;
-  code: string;
-  createdAt: string;
-}
-interface DegreeProgram {
-  id: string;
-  name: string;
-  level: string;
-  departmentId: string;
-}
-interface Cluster {
-  id: string;
-  name: string;
-  departmentId: string;
-}
-interface User {
-  id: string;
-  name: string;
-  role: string;
-  degreeProgramId: string | null;
-}
-interface Proposal {
-  id: string;
-  submittedBy: string | null;
-  submittedByName: string | null;
-  title: string;
-  status: string;
-  supervisorId: string | null;
-  supervisorName: string | null;
-  clusterId: string | null;
-  groupMembers: { id: string; name: string; status: string }[];
-  reviewComment: string | null;
-  reviewedByName: string | null;
-  deletedAt: string | null;
-  deletedByName: string | null;
-  originalFilename: string | null;
-  degreeLevel: string | null;
-}
-interface Profile {
-  userId: string;
-  userName: string;
-  role: string;
-  departmentId: string;
-  departmentName: string;
-  degreeProgramName: string | null;
-  supervisorName: string | null;
-  supervisorId: string | null;
-  academicRank: string | null;
-  maxStudents: number | null;
-  status: string | null;
-  rollNumber: string | null;
-}
-interface ScheduledDefense {
-  id: string;
-  kind: string;
-  proposalId: string | null;
-  progressReportId: string | null;
-  paperId: string | null;
-  paperTitle: string | null;
-  defenseDate: string;
-  scheduledTime: string | null;
-  location: string | null;
-  submissionConfirmed: boolean;
-  phaseId: string | null;
-  phaseLabel: string | null;
-  currentStatus: string;
-  degreeLevel: string | null;
-  studentNames: string[];
-  supervisorName: string | null;
-  panelNames: string[];
-  panelProfessorIds: string[];
-  outcomeComments: string | null;
-  outcomeRecordedAt: string | null;
-  outcomeRecordedByName: string | null;
-  requiresRedefense: boolean;
-  hasEnded: boolean;
-}
-type DefenseKind = "proposal" | "progress_report" | "defense";
-interface DefenseCandidate {
-  // Filled in on the client for the all-levels overview list.
-  degreeLevel?: string;
-  kind: DefenseKind;
-  targetId: string;
-  title: string;
-  status: string;
-  studentNames: string[];
-  supervisorName: string | null;
-  phaseId: string | null;
-  phaseLabel: string | null;
-  suggestedDate: string | null;
-  defense: ScheduledDefense | null;
-}
-// What the plan-defense form is planning: one proposal, progress report or final report.
-interface PlanTarget {
-  kind: string;
-  targetId: string;
-  title: string;
-  phaseId: string | null;
-  suggestedDate: string | null;
-  supervisorName: string | null;
-  existing: ScheduledDefense | null;
-}
-interface ResearchPhase {
-  id: string;
-  phaseType: string;
-  degreeLevel: string;
-  label: string;
-  sequenceNumber: number;
-  opensAt: string | null;
-  deadlineAt: string | null;
-  defenseDate: string | null;
-  gracePeriodEnabled: boolean;
-  isOpen: boolean;
-  hasEnded: boolean;
-  // pending | open | closed — set by the admin, never by the deadline passing.
-  status: string;
-  closedAt: string | null;
-}
-// Whether a phase type can be added next to a level's timeline (researchPhaseOptions).
-interface PhaseOption {
-  phaseType: string;
-  allowed: boolean;
-  reason: string | null;
-  sequenceNumber: number;
-}
-interface GraphQLResult<T> {
-  data?: T;
-  errors?: { message: string }[];
-}
+export type { AdminBadges, AdminView, DegreeLevel } from "../types/adminManagement";
 
-type AdminRole = "admin" | "super_admin";
-export type DegreeLevel = "bachelors" | "masters" | "phd";
-// The screens this module draws; the dashboard shell picks one from the URL.
-export type AdminView =
-  | "overview"
-  | "timeline"
-  | "proposals"
-  | "defenses"
-  | "setup"
-  | "departments";
-// What the sidebar and level picker show as waiting for the admin.
-export interface AdminBadges {
-  proposals: number;
-  defenses: number;
-  // Per level, so the level picker can show the count for the page it is on.
-  proposalsByLevel: Record<DegreeLevel, number>;
-  defensesByLevel: Record<DegreeLevel, number>;
-}
-interface Batch {
-  id: string;
-  label: string;
-  status: string;
-  startedAt: string;
-}
-interface AdminManagementProps {
-  role: AdminRole;
-  view: AdminView;
-  // Timeline, proposals and defenses work on one degree level at a time.
-  level: DegreeLevel;
-  onNavigate: (section: AdminView | "people", level?: DegreeLevel) => void;
-  onBadgesChange?: (badges: AdminBadges) => void;
-  // Bumped by the dashboard when people change elsewhere, so the lists here reload.
-  refreshKey?: number;
-  // The admin's own department, named on the overview.
-  departmentLabel?: string | null;
-}
+const SUPERVISION_LIMITS = { projectsPerLevel: 1, totalStudents: 12 };
+const ACTIVE_SUPERVISION_STATUSES = new Set([
+  "assigned",
+  "approved",
+  "accepted",
+  "changes_requested",
+  "in_progress",
+]);
+const NO_PHASE = "none";
 const ENDPOINT = import.meta.env.VITE_API_URL
 const DEPARTMENTS = gql`
   query Departments {
@@ -456,130 +332,6 @@ async function request<T>(
   return result.data;
 }
 
-
-const inputClass =
-  "mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100";
-const buttonClass =
-  "inline-flex items-center gap-2 rounded-lg border border-blue-300 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50";
-
-const PHASE_TYPES = [
-  {
-    value: "proposal",
-    label: "Proposal",
-    hint: "Students submit their research proposals between the opening time and the deadline.",
-  },
-  {
-    value: "progress_report",
-    label: "Progress report",
-    hint: "Add one progress report phase per review round. Each round has its own deadline.",
-  },
-  {
-    value: "defense",
-    label: "Final defense",
-    hint: "One shared defense day. Individual time slots are scheduled per paper below.",
-  },
-] as const;
-const DEGREE_LEVELS = [
-  { value: "bachelors", label: "Bachelor's" },
-  { value: "masters", label: "Master's" },
-  { value: "phd", label: "PhD" },
-] as const;
-const phaseTypeLabel = (phaseType: string) =>
-  PHASE_TYPES.find((item) => item.value === phaseType)?.label ?? phaseType;
-const degreeLevelLabel = (level: string) =>
-  DEGREE_LEVELS.find((item) => item.value === level)?.label ?? level;
-const emptyPhaseForm = {
-  phaseType: "proposal",
-  degreeLevel: "bachelors",
-  label: "",
-  opensAt: "",
-  deadlineAt: "",
-  defenseDate: "",
-  gracePeriodEnabled: false,
-};
-
-const padTwo = (value: number) => String(value).padStart(2, "0");
-// <input type="datetime-local"> wants local wall-clock time, not an ISO string in UTC.
-const toDateTimeInput = (iso: string | null) => {
-  if (!iso) return "";
-  const date = new Date(iso);
-  return `${date.getFullYear()}-${padTwo(date.getMonth() + 1)}-${padTwo(date.getDate())}T${padTwo(date.getHours())}:${padTwo(date.getMinutes())}`;
-};
-// Supervision limits, kept in step with backend/app/constraints.py (which enforces them).
-// One active project per degree level, per professor — a Bachelor's group is one project
-// however many students it has. Mirrors backend/app/constraints.py.
-const SUPERVISION_LIMITS = { projectsPerLevel: 1, totalStudents: 12 };
-const ACTIVE_SUPERVISION_STATUSES = new Set([
-  "assigned",
-  "approved",
-  "accepted",
-  "changes_requested",
-  "in_progress",
-]);
-// Stands in for "belongs to no research phase" in the round selector, where null
-// already means "every round".
-const NO_PHASE = "none";
-const DEFENSE_KINDS: { value: DefenseKind; label: string }[] = [
-  { value: "proposal", label: "Proposal defenses" },
-  { value: "progress_report", label: "Progress report defenses" },
-  { value: "defense", label: "Final defenses" },
-];
-const defenseReportLabel = (kind: string) =>
-  kind === "proposal"
-    ? "Proposal"
-    : kind === "progress_report"
-      ? "Progress report"
-      : "Final report";
-const defenseKindLabel = (kind: string) =>
-  kind === "proposal"
-    ? "Proposal defense"
-    : kind === "progress_report"
-      ? "Progress defense"
-      : "Final defense";
-const describeDefenseSlot = (defense: {
-  defenseDate: string;
-  scheduledTime: string | null;
-  location: string | null;
-}) =>
-  `${new Date(defense.defenseDate).toLocaleDateString(undefined, { dateStyle: "medium" })}${defense.scheduledTime ? ` at ${defense.scheduledTime.slice(0, 5)}` : ""}${defense.location ? ` · ${defense.location}` : ""}`;
-const formatPhaseDateTime = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-
-function phaseStatus(phase: ResearchPhase): {
-  label: string;
-  className: string;
-} {
-  // The admin's own status comes first: a phase runs because they opened it, not
-  // because its dates say so. The dates only refine what an open phase is doing.
-  if (phase.status === "pending")
-    return { label: "Not started", className: "bg-slate-100 text-slate-600" };
-  if (phase.status === "closed")
-    return { label: "Closed", className: "bg-slate-200 text-slate-700" };
-  const now = Date.now();
-  if (phase.phaseType === "defense") {
-    if (!phase.defenseDate)
-      return { label: "No date", className: "bg-slate-100 text-slate-600" };
-    const endOfDefenseDay = new Date(phase.defenseDate);
-    endOfDefenseDay.setHours(23, 59, 59, 999);
-    return endOfDefenseDay.getTime() < now
-      ? { label: "Open · day held", className: "bg-amber-50 text-amber-700" }
-      : { label: "Open · scheduled", className: "bg-emerald-50 text-emerald-700" };
-  }
-  if (phase.opensAt && new Date(phase.opensAt).getTime() > now)
-    return { label: "Open · not yet due", className: "bg-blue-50 text-blue-700" };
-  if (phase.deadlineAt && new Date(phase.deadlineAt).getTime() < now) {
-    return phase.gracePeriodEnabled
-      ? {
-          label: "Past deadline · late allowed",
-          className: "bg-amber-50 text-amber-700",
-        }
-      : { label: "Past deadline · no submissions", className: "bg-amber-50 text-amber-700" };
-  }
-  return { label: "Open", className: "bg-emerald-50 text-emerald-700" };
-}
 
 function AdminManagement({
   role,
@@ -1725,7 +1477,6 @@ function AdminManagement({
             <Card>
               <ol className="space-y-4 border-l-2 border-slate-200 pl-5">
                 {levelPhases.map((phase) => {
-                  const status = phaseStatus(phase);
                   return (
                     <li key={phase.id} className="relative">
                       <span className="absolute -left-[33px] top-0 flex size-6 items-center justify-center rounded-full border-2 border-white bg-blue-600 text-[11px] font-semibold text-white">
@@ -1738,9 +1489,7 @@ function AdminManagement({
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
                               {phaseTypeLabel(phase.phaseType)}
                             </span>
-                            <span className={`rounded-full px-2 py-0.5 font-medium ${status.className}`}>
-                              {status.label}
-                            </span>
+                            <PhaseStatusBadge phase={phase} />
                           </p>
                           <p className="mt-1.5 text-xs text-slate-500">
                             {phase.phaseType === "defense"

@@ -26,7 +26,6 @@ class StudentProfilesMutation:
         student = models.StudentProfiles(
             user_id = admin_input.user_id,
             degree_program_id = admin_input.degree_program_id,
-            supervisor_id = admin_input.supervisor_id,
             status = admin_input.status,
             roll_number = admin_input.roll_number or None,
             # The cohort that is running now — the admin never picks it from a list.

@@ -4,7 +4,7 @@ backend/storage/
 backend/uploads/
 backend/uploads/
 backend/storage/
-CLAUDE.md
 __pycache__/
 *.pyc
 *.pyo
+.env

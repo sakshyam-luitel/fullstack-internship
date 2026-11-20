@@ -3,6 +3,7 @@ from app.permissions import IsAdminOrSuperAdmin, IsDepartmentAdmin, IsAuthentica
 from app import mutation_input , schemas , models , constraints
 from app.utils import get_password_hash , _commit_user , save_avatar_image
 from strawberry.file_uploads import Upload
+from sqlalchemy import func
 
 def _ensure_email_available(db, email: str, exclude_user_id=None) -> None:
     """Emails are unique regardless of letter case, so "Ram@x.com" can't shadow "ram@x.com"."""

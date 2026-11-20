@@ -105,9 +105,9 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
           adminInput: {
             userId: form.userId,
             degreeProgramId: form.degreeProgramId,
-            supervisorId: form.supervisorId || null,
             status: form.status,
             rollNumber: form.rollNumber.trim() || null,
+            ...(editingUserId ? { supervisorId: form.supervisorId || null } : {}),
           },
         });
       } else {
@@ -116,7 +116,7 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
         });
       }
       setIsFormOpen(false);
-      toast.success(editingUserId ? "Profile updated." : "Profile created.");
+      toast.success(editingUserId ? "Details updated." : "Details added.");
       await onSaved();
     } catch (saveError) {
       setFormError(saveError instanceof Error ? saveError.message : "Unable to save the profile.");
@@ -130,8 +130,8 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-slate-500">
           {usersWithoutProfile.length === 0
-            ? `Every ${noun} here has a profile.`
-            : `${usersWithoutProfile.length} ${noun}${usersWithoutProfile.length === 1 ? "" : "s"} without a profile.`}
+            ? `Every ${noun} here has details.`
+            : `${usersWithoutProfile.length} ${noun}${usersWithoutProfile.length === 1 ? "" : "s"} without details.`}
         </p>
         <button
           type="button"
@@ -140,7 +140,7 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
           className="inline-flex items-center gap-2 rounded-lg border border-blue-300 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus size={16} aria-hidden="true" />
-          Create {noun} profile
+          Add {noun} details
         </button>
       </div>
       {users.length === 0 ? (
@@ -167,7 +167,7 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
                   {details ? (
                     <p className="mt-0.5 text-xs text-slate-600">{details.filter(Boolean).join(" · ")}</p>
                   ) : (
-                    <p className="mt-0.5 text-xs italic text-amber-700">No {noun} profile yet</p>
+                    <p className="mt-0.5 text-xs italic text-amber-700">Details not added yet</p>
                   )}
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-2">
@@ -178,11 +178,11 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
                   )}
                   {profile ? (
                     <button type="button" onClick={() => openForm(user)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
-                      <Pencil size={14} aria-hidden="true" /> Profile
+                      <Pencil size={14} aria-hidden="true" /> Edit details
                     </button>
                   ) : (
                     <button type="button" onClick={() => openForm(user)} className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700">
-                      <Plus size={14} aria-hidden="true" /> Create profile
+                      <Plus size={14} aria-hidden="true" /> Add details
                     </button>
                   )}
                 </div>
@@ -197,9 +197,13 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
           <div role="dialog" aria-modal="true" className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-xl font-semibold text-slate-900">{editingUserId ? `Edit ${noun} profile` : `Create ${noun} profile`}</h2>
+                <h2 className="text-xl font-semibold text-slate-900">{editingUserId ? `Edit ${noun} details` : `Add ${noun} details`}</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  {profileType === "student" ? "Roll number, degree program and supervisor." : "Academic rank and how many students they can supervise."}
+                  {profileType === "student"
+                    ? editingUserId
+                      ? "Roll number, degree program and supervisor."
+                      : "Roll number and degree program."
+                    : "Academic rank and how many students they can supervise."}
                 </p>
               </div>
               <button type="button" aria-label="Close profile form" onClick={() => setIsFormOpen(false)} className="flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800">
@@ -242,15 +246,17 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
                       </select>
                     </label>
                   </div>
-                  <label className="block text-sm font-medium text-slate-700">
-                    Supervisor <span className="font-normal text-slate-500">(optional)</span>
-                    <select value={form.supervisorId} onChange={(event) => setForm({ ...form, supervisorId: event.target.value })} className={inputClass}>
-                      <option value="">Not assigned</option>
-                      {professors.map((professor) => (
-                        <option key={professor.id} value={professor.id}>{professor.name}</option>
-                      ))}
-                    </select>
-                  </label>
+                  {editingUserId && (
+                    <label className="block text-sm font-medium text-slate-700">
+                      Supervisor <span className="font-normal text-slate-500">(optional)</span>
+                      <select value={form.supervisorId} onChange={(event) => setForm({ ...form, supervisorId: event.target.value })} className={inputClass}>
+                        <option value="">Not assigned</option>
+                        {professors.map((professor) => (
+                          <option key={professor.id} value={professor.id}>{professor.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                 </>
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -268,7 +274,7 @@ function ProfileManagement({ profileType, users, profiles, degreePrograms, profe
               <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={() => setIsFormOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Cancel</button>
                 <button type="submit" disabled={isSaving} className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
-                  {isSaving ? "Saving..." : editingUserId ? "Save changes" : "Create profile"}
+                  {isSaving ? "Saving..." : editingUserId ? "Save changes" : "Add details"}
                 </button>
               </div>
             </form>
