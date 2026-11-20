@@ -1,5 +1,5 @@
 """Plain REST routes for proposal PDF upload/download — a deliberate,
-documented exception to the single-GraphQL-endpoint rule in CLAUDE.md, since
+documented exception to the single-GraphQL-endpoint rule, since
 GraphQL doesn't carry binary payloads well. Mounted alongside the
 GraphQLRouter in main.py, authenticated with the same JWT as everything else
 via oauth2.get_current_user_rest (not a separate auth path).

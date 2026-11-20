@@ -860,7 +860,7 @@ function AdminDashboard() {
           <div className="space-y-4">
             <SectionHeader
               title="Professors and students"
-              description="Each person has an account (name, email, password) and a profile (roll number, program and supervisor for students; rank and capacity for professors). Professors need a profile to sit on defense panels."
+              description="Each person has an account (name, email, password) and details (roll number and program for students; rank and capacity for professors). Assign student supervisors later when proposals are reviewed. Professors need their details to sit on defense panels."
               action={
                 <button type="button" onClick={openCreateUser} className={primaryButtonClass}>
                   <Plus size={16} aria-hidden="true" /> Add person

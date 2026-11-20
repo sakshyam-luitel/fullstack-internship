@@ -90,7 +90,6 @@ class ClusterDeleteInput:
 class StudentProfilesInput:
     user_id : uuid.UUID
     degree_program_id : uuid.UUID
-    supervisor_id : Optional[uuid.UUID] = None
     status : str
     roll_number : Optional[str] = None
 
